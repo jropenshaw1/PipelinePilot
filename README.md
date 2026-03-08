@@ -1,6 +1,8 @@
 # PipelinePilot
 
-> *AI-assisted job search pipeline management — built the right way.*
+AI-assisted job search pipeline management — built the right way.
+
+PipelinePilot is a filesystem-first job search pipeline manager that tracks opportunities, integrates AI role analysis, and maintains a complete lifecycle record for every application.
 
 ---
 
@@ -14,7 +16,7 @@ PipelinePilot solves that. It manages the complete lifecycle of every job opport
 
 ## How This Was Built
 
-**Documentation first. Code second. No exceptions.**
+Documentation first. Code second. No exceptions.
 
 Every architectural decision, requirement, use case, data field, and process flow was defined, documented, and committed to this repository before a single line of implementation code was written.
 
@@ -22,17 +24,15 @@ This is not a portfolio decoration. It is a production tool I depend on for my o
 
 The engineering sequence:
 
-```
 1. Requirements interview (BABOK elicitation)
 2. Project Charter
-3. Use Case Specification  
+3. Use Case Specification
 4. Data Dictionary
 5. Software Requirements Specification (IEEE 830 / ISO/IEC 29148)
 6. Process Flow (BPMN 2.0)
 7. Architecture Decision Records
 8. Definition of Done
 ── first commit of implementation code ──
-```
 
 The commit history reflects this. The timestamps are not edited.
 
@@ -40,17 +40,29 @@ The commit history reflects this. The timestamps are not edited.
 
 ## Documentation
 
-All pre-code documentation is in [`/docs`](./docs):
+All pre-code documentation is in `/docs`:
 
 | Document | Standard |
 |---|---|
-| [01 — Project Charter](./docs/01_project_charter.md) | BABOK |
-| [02 — Use Case Specification](./docs/02_use_case_specification.md) | UML / BABOK |
-| [03 — Data Dictionary](./docs/03_data_dictionary.md) | ISO/IEC 11179 |
-| [04 — Software Requirements Specification](./docs/04_software_requirements_specification.md) | IEEE 830 / ISO/IEC 29148 |
-| [05 — Process Flow](./docs/05_process_flow.md) | BPMN 2.0 |
-| [06 — Architecture Decision Records](./docs/06_architecture_decision_records.md) | Michael Nygard ADR |
-| [07 — Definition of Done](./docs/07_definition_of_done.md) | — |
+| 01 — Project Charter | BABOK |
+| 02 — Use Case Specification | UML / BABOK |
+| 03 — Data Dictionary | ISO/IEC 11179 |
+| 04 — Software Requirements Specification | IEEE 830 / ISO/IEC 29148 |
+| 05 — Process Flow | BPMN 2.0 |
+| 06 — Architecture Decision Records | Michael Nygard ADR |
+| 07 — Definition of Done | — |
+
+---
+
+## Design Principles
+
+PipelinePilot is built on a small set of engineering principles:
+
+- **Filesystem as source of truth**
+- **Deterministic rebuildability**
+- **Explicit documentation before implementation**
+- **Durable AI artifacts**
+- **Separation of reasoning and orchestration**
 
 ---
 
@@ -60,6 +72,8 @@ All pre-code documentation is in [`/docs`](./docs):
 
 **Stack:** Python · CustomTkinter · SQLite · python-docx · pathlib
 
+Filesystem-first ensures the system remains durable, inspectable, and recoverable even if the database layer fails.
+
 **Core design decisions:**
 
 - **Filesystem is truth.** OneDrive folders are the source of record. SQLite is a derived, rebuildable index — losing the database is an inconvenience, not a disaster.
@@ -68,11 +82,28 @@ All pre-code documentation is in [`/docs`](./docs):
 - **Reference and index, never reinterpret.** PipelinePilot indexes fit analysis output. It never generates a competing AI reasoning artifact.
 - **Idempotent recovery.** `pipelinepilot rebuild-index` reconstructs the entire SQLite database from the filesystem. Run it once or ten times — same result.
 
-Seven Architecture Decision Records document every significant choice, including what was rejected and why. See [`/docs/06_architecture_decision_records.md`](./docs/06_architecture_decision_records.md).
+Seven Architecture Decision Records document every significant choice, including what was rejected and why. See `/docs/06_architecture_decision_records.md`.
 
 ---
 
-## Key Features
+## Non-Goals
+
+PipelinePilot intentionally does not attempt to solve every aspect of job searching.
+
+The system is deliberately constrained to preserve simplicity and durability.
+
+Non-goals include:
+
+- **No job board scraping.** PipelinePilot assumes discovery happens elsewhere. It manages opportunities after discovery.
+- **No AI reasoning inside PipelinePilot.** AI analysis is owned by the Job Fit Analyst system. PipelinePilot indexes outputs but never generates competing analysis.
+- **No cloud service dependency.** The system runs entirely locally. Cloud storage is used only for file synchronization.
+- **No complex workflow engine.** The lifecycle stages are intentionally simple and human-driven.
+
+These constraints keep the system understandable, recoverable, and durable.
+
+---
+
+## System Capabilities
 
 - **Opportunity capture** — creates `Company_Role` folder and blank job description document in one action
 - **Fit analysis integration** — parses YAML front-matter from `fit_analysis.md` to index score, recommendation, strengths, and gaps without duplicating reasoning
@@ -93,7 +124,9 @@ PipelinePilot integrates with the [Job Fit Analyst](https://github.com/jropensha
 - `Resume_Company_Role.docx` — tailored resume optimized for the specific role
 - `CoverLetter_Company_Role.docx` — tailored cover letter
 
-PipelinePilot parses `fit_analysis.md` to index the score, recommendation, strengths, and gaps. The resume and cover letter are stored in the folder and used directly by the User. The two systems are cleanly separated. Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.
+PipelinePilot parses `fit_analysis.md` to index the score, recommendation, strengths, and gaps. The resume and cover letter are stored in the folder and used directly by the user.
+
+The two systems are cleanly separated. **Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.**
 
 ---
 
@@ -103,7 +136,7 @@ PipelinePilot parses `fit_analysis.md` to index the score, recommendation, stren
 git clone https://github.com/jropenshaw1/pipelinepilot.git
 cd pipelinepilot
 python -m venv venv
-venv\Scripts\activate        # Windows
+venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 python pipelinepilot.py
 ```
@@ -118,11 +151,11 @@ Configure your job search root folder on first launch. PipelinePilot creates a `
 
 The pace of AI innovation is unlike anything I have seen in 28 years in technology. New tools arrive weekly. Functionality morphs daily. Staying relevant as a senior technology leader means more than reading about AI: it means building with it.
 
-Leading in the AI era requires a new management model. AI agents are a new type of employee: they require clear requirements, defined scope, quality oversight, and disciplined direction.
+Leading in the AI era requires a new management model. AI agents are a new type of employee: they require clear requirements, defined scope, quality oversight, and disciplined direction. This project is built on that model.
 
-This project is built on that model. I did not write the implementation code. I engineered the solution: requirements, architecture, design decisions, validation, and quality control.
+I did not write the implementation code. I engineered the solution: requirements, architecture, design decisions, validation, and quality control. Senior leaders add the most value not by writing features, but by engineering systems and leading from the front.
 
-Senior leaders add the most value not by writing features, but by engineering systems and leading from the front. My role is to create the conditions where great engineering happens: clear direction, sound architecture, disciplined decision-making, and a high quality bar. Implementation is a team sport. In 2026, one of those teammates is AI.
+My role is to create the conditions where great engineering happens: clear direction, sound architecture, disciplined decision-making, and a high quality bar. Implementation is a team sport. In 2026, one of those teammates is AI.
 
 ---
 
@@ -132,4 +165,4 @@ Senior leaders add the most value not by writing features, but by engineering sy
 
 ---
 
-*Jonathan Openshaw · [LinkedIn](https://linkedin.com/in/jonathan-openshaw) · [Job Fit Analyst](https://github.com/jropenshaw1/job-fit-analyst)*
+[Jonathan Openshaw](https://www.linkedin.com/in/jonathan-openshaw) · [Job Fit Analyst](https://github.com/jropenshaw1/job-fit-analyst)
