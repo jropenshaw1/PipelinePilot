@@ -1057,7 +1057,15 @@ class DetailWindow(ctk.CTkToplevel):
             text=f"Folder: {opp['folder_name']}",
             font=ctk.CTkFont(size=10, family="Courier"),
             text_color=C_MUTED,
-        ).pack(anchor="w", pady=(0, 20))
+        ).pack(anchor="w", pady=(0, 4))
+
+        # Job URL — editable
+        url_frame = ctk.CTkFrame(main, fg_color="transparent")
+        url_frame.pack(anchor="w", pady=(0, 16), fill="x")
+        ctk.CTkLabel(url_frame, text="Job URL:", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 8))
+        self._url_var = ctk.StringVar(value=opp.get("job_url") or "")
+        self._fields["job_url"] = self._url_var
+        ctk.CTkEntry(url_frame, textvariable=self._url_var, width=520, font=ctk.CTkFont(size=11)).pack(side="left")
 
         # ── Status & Dates ──
         self._section(main, "Status & Lifecycle")
