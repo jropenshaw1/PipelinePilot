@@ -320,11 +320,11 @@ class PipelinePilotApp(ctk.CTk):
             width=140,
         ).pack(side="right")
 
-        # Status filter
+        # Filter bar — status dropdown + search box
         filter_frame = ctk.CTkFrame(outer, fg_color="transparent")
         filter_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
 
-        ctk.CTkLabel(filter_frame, text="Filter:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(filter_frame, text="Status:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
 
         self._status_filter_var = ctk.StringVar(value="All")
         status_options = ["All"] + STATUS_VALUES
@@ -336,7 +336,19 @@ class PipelinePilotApp(ctk.CTk):
             width=160,
             fg_color=C_CARD,
         )
-        filter_menu.pack(side="left")
+        filter_menu.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(filter_frame, text="Search:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
+
+        self._search_var = ctk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._refresh_list(outer))
+        ctk.CTkEntry(
+            filter_frame,
+            textvariable=self._search_var,
+            placeholder_text="Company or role...",
+            width=240,
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
 
         # List container
         list_container = ctk.CTkScrollableFrame(outer, fg_color="transparent")
@@ -348,13 +360,22 @@ class PipelinePilotApp(ctk.CTk):
         self._render_list_rows(opportunities)
 
     def _refresh_list(self, outer_frame=None):
-        """Re-render list rows based on current filter."""
+        """Re-render list rows based on status filter and search query."""
         status_filter = self._status_filter_var.get()
         if status_filter == "All":
             status_filter = None
         opportunities = database.get_all_opportunities(
             self.db_path, status_filter=status_filter
         )
+        # Apply search filter client-side
+        search = getattr(self, "_search_var", None)
+        query = search.get().strip().lower() if search else ""
+        if query:
+            opportunities = [
+                o for o in opportunities
+                if query in o.get("company_name", "").lower()
+                or query in o.get("role_title", "").lower()
+            ]
         for w in self._list_container.winfo_children():
             w.destroy()
         self._render_list_rows(opportunities)
