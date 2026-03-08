@@ -86,12 +86,14 @@ Seven Architecture Decision Records document every significant choice, including
 
 ## Job Fit Analyst Integration
 
-PipelinePilot integrates with the [Job Fit Analyst](https://github.com/jropenshaw1/job-fit-analyst) Claude skill — a separate six-agent system that produces dual artifacts per analysis run:
+PipelinePilot integrates with the [Job Fit Analyst](https://github.com/jropenshaw1/job-fit-analyst) Claude skill — a separate six-agent system that produces four artifacts per analysis run, all saved directly to the role's folder:
 
 - `fit_analysis.docx` — full Advocate/Auditor narrative for human review
 - `fit_analysis.md` — YAML front-matter metadata for PipelinePilot indexing
+- `Resume_Company_Role.docx` — tailored resume optimized for the specific role
+- `CoverLetter_Company_Role.docx` — tailored cover letter
 
-The two systems are cleanly separated. Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.
+PipelinePilot parses `fit_analysis.md` to index the score, recommendation, strengths, and gaps. The resume and cover letter are stored in the folder and used directly by the User. The two systems are cleanly separated. Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.
 
 ---
 
@@ -108,17 +110,19 @@ python pipelinepilot.py
 
 Configure your job search root folder on first launch. PipelinePilot creates a `pipelinepilot.config` file in the application directory — no hardcoded paths, no registry entries.
 
+> **Important:** PipelinePilot's filesystem-first architecture means your job search folder *is* your data. A local-only folder is not sufficient — your root folder must be inside a cloud-synced directory such as OneDrive, Google Drive, Dropbox, or equivalent. If the files are lost, no database backup can recover them. This is the one infrastructure requirement the tool cannot enforce for you.
+
 ---
 
 ## On Building with AI in 2026
 
-The pace of AI innovation is unlike anything I have seen in 28 years of IT leadership. New tools arrive weekly. Functionality morphs daily. Staying relevant as a senior technology leader means more than reading about AI — it means building with it.
+The pace of AI innovation is unlike anything I have seen in 28 years in technology. New tools arrive weekly. Functionality morphs daily. Staying relevant as a senior technology leader means more than reading about AI: it means building with it.
 
-Leading in the AI era requires a new management model. AI agents are a new type of employee — they require clear requirements, defined scope, quality oversight, and disciplined direction.
+Leading in the AI era requires a new management model. AI agents are a new type of employee: they require clear requirements, defined scope, quality oversight, and disciplined direction.
 
-This project is built on that model. I did not write the implementation code. I engineered the solution: requirements, architecture, design decisions, validation, and quality control. The implementation is a team sport. In 2026, one of those team members is AI.
+This project is built on that model. I did not write the implementation code. I engineered the solution: requirements, architecture, design decisions, validation, and quality control.
 
-Senior leaders who are *coding* aren't leading. Senior leaders who are *engineering* are.
+Senior leaders add the most value not by writing features, but by engineering systems and leading from the front. My role is to create the conditions where great engineering happens: clear direction, sound architecture, disciplined decision-making, and a high quality bar. Implementation is a team sport. In 2026, one of those teammates is AI.
 
 ---
 

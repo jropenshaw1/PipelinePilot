@@ -76,8 +76,8 @@
 5. PipelinePilot validates input: sanitizes special characters, enforces max length, previews generated folder name
 6. User confirms folder name
 7. PipelinePilot creates `Company_Role` folder on OneDrive
-8. PipelinePilot creates a blank `jd.docx` inside the folder
-9. User opens `jd.docx`, pastes job description, URL, and contact details, saves
+8. PipelinePilot creates a blank `JD_Company_Role.docx` inside the folder (= `JD_` + `folder_name` + `.docx` — no additional sanitization)
+9. User opens `JD_Company_Role.docx`, pastes job description, URL, and contact details, saves
 10. PipelinePilot creates the database record with status = "Captured", date_discovered auto-set
 11. User sets source, location type, location city, and any restrictions (degree required / culture concern / relocation required)
 
@@ -92,7 +92,7 @@
 - Folder already exists with identical name → User warned, no duplicate created
 - OneDrive path not accessible → Error displayed, User directed to check connection
 
-**Post-condition:** `Company_Role` folder exists on OneDrive, `jd.docx` created, database record exists with status = "Captured".
+**Post-condition:** `Company_Role` folder exists on OneDrive, `JD_Company_Role.docx` created, database record exists with status = "Captured".
 
 ---
 
@@ -246,7 +246,7 @@ top_gaps:
 2. PipelinePilot enumerates all `Company_Role` folders under job search root
 3. For each folder:
    a. Validates folder naming convention
-   b. Checks for expected documents (`jd.docx`, `fit_analysis.md`)
+   b. Checks for expected documents (`JD_Company_Role.docx`, `fit_analysis.md`)
    c. Parses YAML front-matter from `fit_analysis.md` if present
    d. Normalizes values
    e. Upserts SQLite record (idempotent — safe to run multiple times)

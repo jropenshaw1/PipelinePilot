@@ -81,7 +81,7 @@ Single user. Technology executive with 28 years of IT experience. Not a develope
 
 **FR-04:** The system shall display the proposed `folder_name` for User confirmation before creating any filesystem objects.
 
-**FR-05:** Upon confirmation, the system shall create the `Company_Role` folder on OneDrive and create a blank `jd.docx` inside it.
+**FR-05:** Upon confirmation, the system shall create the `Company_Role` folder on OneDrive and create a blank `JD_Company_Role.docx` inside it. The filename is derived directly as `JD_` + `folder_name` + `.docx` — no additional sanitization required since folder_name is already clean.
 
 **FR-06:** The system shall create a database record simultaneously with folder creation, with `status` = "Capturing" and `date_created` auto-set.
 
@@ -185,9 +185,11 @@ Single user. Technology executive with 28 years of IT experience. Not a develope
 
 **NFR-05:** Loss of the SQLite database shall result in zero permanent data loss. The filesystem is the source of truth; the database is rebuildable.
 
+**NFR-05a:** The job search root folder must be located inside a cloud-synced directory (OneDrive, Google Drive, Dropbox, or equivalent). A local-only folder does not satisfy the filesystem-as-truth architecture. PipelinePilot cannot enforce this requirement programmatically but shall display a warning on first launch if the configured root path does not appear to reside within a known cloud-sync location.
+
 **NFR-06:** The rebuild-index command shall complete successfully on a clean filesystem with no prior database present.
 
-**NFR-07:** The application shall handle OneDrive sync delays gracefully — folder creation operations shall confirm filesystem success before creating the database record.
+**NFR-07:** The application shall handle cloud sync delays gracefully (OneDrive, Google Drive, Dropbox, or equivalent) — folder creation operations shall confirm filesystem success before creating the database record.
 
 ### 4.3 Maintainability
 

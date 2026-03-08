@@ -51,7 +51,7 @@ Each `Company_Role` folder is expected to contain the following files:
 
 | Filename | Type | Created By | Required | Description |
 |---|---|---|---|---|
-| `jd.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details |
+| `JD_Company_Role.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details. Filename = `JD_` + `folder_name` + `.docx`. No separate sanitization — folder_name is already clean. Example: folder `CambridgeInvestmentResearch_VPITInfrastructureOperations` → `JD_CambridgeInvestmentResearch_VPITInfrastructureOperations.docx` |
 | `fit_analysis.md` | Markdown + YAML | Job Fit Analyst skill | No (required for fit indexing) | YAML front-matter metadata + narrative analysis |
 | `fit_analysis.docx` | Word document | Job Fit Analyst skill | No | Human-readable fit analysis for review and demos |
 | `Resume_CompanyName_RoleTitle.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role |
