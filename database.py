@@ -256,11 +256,38 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
         }
 
         try:
-            cols = ", ".join(record.keys())
-            placeholders = ", ".join(["?" for _ in record])
-            sql = f"INSERT OR REPLACE INTO opportunities ({cols}) VALUES ({placeholders})"
             with _connect(db_path) as conn:
-                conn.execute(sql, list(record.values()))
+                existing = conn.execute(
+                    "SELECT folder_name FROM opportunities WHERE folder_name = ?",
+                    (folder_name,),
+                ).fetchone()
+
+                if existing:
+                    # Record exists — preserve all user-entered lifecycle data.
+                    # Only refresh fields that come from the filesystem/YAML.
+                    fs_fields = {
+                        "company_name": record["company_name"],
+                        "role_title": record["role_title"],
+                        "fit_score": record.get("fit_score"),
+                        "fit_threshold": record.get("fit_threshold", fit_threshold),
+                        "recommendation": record.get("recommendation"),
+                        "top_strengths": record.get("top_strengths"),
+                        "top_gaps": record.get("top_gaps"),
+                        "date_modified": date.today().isoformat(),
+                    }
+                    set_clause = ", ".join([f"{k} = ?" for k in fs_fields])
+                    conn.execute(
+                        f"UPDATE opportunities SET {set_clause} WHERE folder_name = ?",
+                        list(fs_fields.values()) + [folder_name],
+                    )
+                else:
+                    # New record — full insert.
+                    cols = ", ".join(record.keys())
+                    placeholders = ", ".join(["?" for _ in record])
+                    conn.execute(
+                        f"INSERT INTO opportunities ({cols}) VALUES ({placeholders})",
+                        list(record.values()),
+                    )
                 conn.commit()
             report["records_indexed"] += 1
         except Exception as e:
