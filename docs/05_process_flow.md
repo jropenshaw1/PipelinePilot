@@ -72,18 +72,18 @@ The flow is organized into six stages matching the lifecycle defined in the Proj
 │   YES  ──► PipelinePilot creates Company_Role folder on OneDrive            │
 │       │                                                                      │
 │       ▼                                                                      │
-│  PipelinePilot creates blank jd.docx inside folder                          │
+│  PipelinePilot creates blank JD_Company_Role.docx inside folder             │
 │       │                                                                      │
 │       ▼                                                                      │
 │  PipelinePilot creates DB record: status="Capturing", date_created=today    │
 │       │                                                                      │
 │       ▼                                                                      │
-│  User opens jd.docx → pastes JD text, URL, contact details → saves          │
+│  User opens JD_Company_Role.docx → pastes JD text, URL, contact → saves    │
 │       │                                                                      │
 │       ▼                                                                      │
 │  User sets: source, location_type, location_city, restrictions              │
 │       │                                                                      │
-│  STAGE 2 EXIT: folder created, jd.docx populated, record status="Capturing" │
+│  STAGE 2 EXIT: folder created, JD doc populated, record status="Capturing"  │
 │       │                                                                      │
 │       ▼                                                                      │
 │                          STAGE 3: FIT ANALYSIS                              │
@@ -95,7 +95,7 @@ The flow is organized into six stages matching the lifecycle defined in the Proj
 │  User invokes Job Fit Analyst skill (external — Claude Desktop/claude.ai)   │
 │       │                                                                      │
 │       ▼                                                                      │
-│  User provides: master resume + jd.docx → Job Fit Analyst runs              │
+│  User provides: master resume + JD_Company_Role.docx → JFA runs            │
 │       │                                                                      │
 │       ▼                                                                      │
 │  Job Fit Analyst writes artifacts to Company_Role folder:                   │
@@ -236,7 +236,7 @@ The flow is organized into six stages matching the lifecycle defined in the Proj
 │       │                                                                      │
 │   NO  ──► Log warning. Skip folder. Continue.                               │
 │       │                                                                      │
-│   YES  ──► Check for jd.docx presence                                       │
+│   YES  ──► Check for JD_Company_Role.docx presence                        │
 │       │    - Missing: log warning, continue with partial record             │
 │       │                                                                      │
 │       ▼                                                                      │

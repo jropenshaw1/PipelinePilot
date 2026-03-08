@@ -127,13 +127,13 @@ Full detail in `06_architecture_decision_records.md`.
 
 ## 10. LinkedIn Narrative (Approved)
 
-> *"The pace of AI innovation is unlike anything I have seen in 28 years. New tools arrive weekly. Functionality morphs daily. Staying relevant as a senior technology leader in 2026 means more than reading about AI — it means building with it.*
+> *"The pace of AI innovation is unlike anything I have seen in 28 years in technology. New tools arrive weekly. Functionality morphs daily. Staying relevant as a senior technology leader in 2026 means more than reading about AI — it means building with it.*
 >
 > *Leading in the AI era requires a new management model. AI agents are a new type of employee — they require clear requirements, defined scope, quality oversight, and disciplined direction. I don't have a team of sentient engineers at the moment. But I have built a team of AI agents, and they have given me something invaluable: the opportunity to keep evolving my leadership skills in real time.*
 >
 > *This tool is not a toy project. It is a production tool I depend on. Built the right way: charter first, requirements second, architecture third, code last. Not a single line written before the engineering was done.*
 >
-> *Senior leaders who are coding aren't leading. My role is to engineer solutions — requirements, architecture, design decisions, validation, and quality control. The implementation is a team sport. In 2026, one of those team members is AI."*
+> *Senior leaders add the most value not by writing features, but by engineering systems and leading from the front. My role is to create the conditions where great engineering happens — clear direction, sound architecture, disciplined decision-making, and a high quality bar. Implementation is a team sport. In 2026, one of those teammates is AI."*
 
 ---
 
