@@ -1,0 +1,269 @@
+# database.py — PipelinePilot SQLite database layer
+# Schema derived from Data Dictionary v1.0 §5
+# NFR-05: Filesystem is truth — SQLite is a derived, rebuildable index
+
+import sqlite3
+from datetime import date, timedelta
+from pathlib import Path
+
+from models import DB_FILENAME
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS opportunities (
+    folder_name             TEXT PRIMARY KEY,
+    company_name            TEXT NOT NULL,
+    role_title              TEXT NOT NULL,
+    job_url                 TEXT,
+    source                  TEXT,
+    source_other            TEXT,
+    date_discovered         DATE NOT NULL,
+    restrictions            TEXT,
+    location_type           TEXT,
+    location_city           TEXT,
+    fit_score               REAL,
+    fit_threshold           REAL DEFAULT 0.65,
+    recommendation          TEXT,
+    decision_override       INTEGER NOT NULL DEFAULT 0,
+    decision_notes          TEXT,
+    top_strengths           TEXT,
+    top_gaps                TEXT,
+    status                  TEXT NOT NULL DEFAULT 'New',
+    date_applied            DATE,
+    confirmation_email      TEXT,
+    contact_name            TEXT,
+    contact_email           TEXT,
+    last_communication_date DATE,
+    last_communication_type TEXT,
+    communication_notes     TEXT,
+    follow_up_date          DATE,
+    action_items            TEXT,
+    interview_date          DATE,
+    interview_notes         TEXT,
+    date_created            DATE NOT NULL,
+    date_modified           DATE NOT NULL,
+    archived                INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+
+def get_db_path(job_search_root: str) -> Path:
+    return Path(job_search_root) / DB_FILENAME
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def initialize_database(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(SCHEMA)
+        conn.commit()
+
+
+def create_opportunity(db_path: Path, record: dict) -> None:
+    """FR-06: Create record simultaneously with folder creation."""
+    today = date.today().isoformat()
+    record = dict(record)
+    record.setdefault("date_discovered", today)
+    record.setdefault("date_created", today)
+    record.setdefault("date_modified", today)
+    record.setdefault("status", "Capturing")
+    record.setdefault("decision_override", 0)
+    record.setdefault("archived", 0)
+    record.setdefault("fit_threshold", 0.65)
+
+    cols = ", ".join(record.keys())
+    placeholders = ", ".join(["?" for _ in record])
+    sql = f"INSERT INTO opportunities ({cols}) VALUES ({placeholders})"
+    with _connect(db_path) as conn:
+        conn.execute(sql, list(record.values()))
+        conn.commit()
+
+
+def get_all_opportunities(
+    db_path: Path,
+    include_archived: bool = False,
+    status_filter: str | None = None,
+) -> list[dict]:
+    """FR-07: Return all opportunity records, optionally filtered."""
+    conditions = []
+    params = []
+    if not include_archived:
+        conditions.append("archived = 0")
+    if status_filter:
+        conditions.append("status = ?")
+        params.append(status_filter)
+    sql = "SELECT * FROM opportunities"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY date_created DESC"
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_opportunity(db_path: Path, folder_name: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM opportunities WHERE folder_name = ?",
+            (folder_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
+    """FR-10: Update fields and auto-set date_modified. FR-18: Auto follow_up_date."""
+    updates = dict(updates)
+    updates["date_modified"] = date.today().isoformat()
+
+    if updates.get("status") == "Applied" and updates.get("date_applied"):
+        if not updates.get("follow_up_date"):
+            applied = date.fromisoformat(updates["date_applied"])
+            updates.setdefault(
+                "follow_up_date",
+                (applied + timedelta(days=14)).isoformat(),
+            )
+
+    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+    sql = f"UPDATE opportunities SET {set_clause} WHERE folder_name = ?"
+    with _connect(db_path) as conn:
+        conn.execute(sql, list(updates.values()) + [folder_name])
+        conn.commit()
+
+
+def archive_opportunity(db_path: Path, folder_name: str) -> None:
+    """FR-11: Soft delete."""
+    update_opportunity(db_path, folder_name, {"archived": 1})
+
+
+def get_dashboard_metrics(db_path: Path) -> dict:
+    """FR-23, FR-24: Compute pipeline metrics from the SQLite index."""
+    today = date.today().isoformat()
+    with _connect(db_path) as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM opportunities WHERE archived = 0"
+        ).fetchone()[0]
+
+        by_status = {}
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM opportunities "
+            "WHERE archived = 0 GROUP BY status"
+        ).fetchall()
+        for row in rows:
+            by_status[row["status"]] = row["cnt"]
+
+        analyzed = conn.execute(
+            "SELECT COUNT(*) FROM opportunities "
+            "WHERE fit_score IS NOT NULL AND archived = 0"
+        ).fetchone()[0]
+
+        avg_row = conn.execute(
+            "SELECT AVG(fit_score) FROM opportunities "
+            "WHERE fit_score IS NOT NULL AND archived = 0"
+        ).fetchone()[0]
+        avg_fit = round(avg_row, 2) if avg_row is not None else None
+
+        above_threshold = conn.execute(
+            "SELECT COUNT(*) FROM opportunities "
+            "WHERE fit_score IS NOT NULL AND fit_score >= fit_threshold AND archived = 0"
+        ).fetchone()[0]
+
+        follow_ups_due = conn.execute(
+            "SELECT COUNT(*) FROM opportunities "
+            "WHERE follow_up_date IS NOT NULL "
+            "AND follow_up_date <= ? "
+            "AND archived = 0 "
+            "AND status NOT IN ('Passed','Offer','Closed','Rejected')",
+            (today,),
+        ).fetchone()[0]
+
+    return {
+        "total": total,
+        "by_status": by_status,
+        "analyzed": analyzed,
+        "avg_fit": avg_fit,
+        "above_threshold": above_threshold,
+        "follow_ups_due": follow_ups_due,
+    }
+
+
+def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.65) -> dict:
+    """
+    FR-25 through FR-29: Reconstruct database entirely from filesystem.
+    Deterministic, idempotent. Uses INSERT OR REPLACE.
+    Non-conforming folders logged as warnings, not errors.
+    """
+    import re
+    import yaml
+
+    root = Path(job_search_root)
+    report = {
+        "folders_scanned": 0,
+        "records_indexed": 0,
+        "warnings": [],
+        "failures": [],
+    }
+
+    initialize_database(db_path)
+    folder_name_pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$")
+
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        report["folders_scanned"] += 1
+        folder_name = entry.name
+
+        if not folder_name_pattern.match(folder_name) or "_" not in folder_name:
+            report["warnings"].append(
+                f"Skipped '{folder_name}' — does not match Company_Role convention"
+            )
+            continue
+
+        fit_data = {}
+        fit_file = entry / "fit_analysis.md"
+        if fit_file.exists():
+            try:
+                content = fit_file.read_text(encoding="utf-8")
+                if content.startswith("---"):
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        fit_data = yaml.safe_load(parts[1]) or {}
+            except Exception as e:
+                report["warnings"].append(
+                    f"YAML parse error in '{folder_name}/fit_analysis.md': {e}"
+                )
+                fit_data = {}
+
+        record = {
+            "folder_name": folder_name,
+            "company_name": fit_data.get("company", folder_name.split("_")[0]),
+            "role_title": fit_data.get("role", "_".join(folder_name.split("_")[1:])),
+            "job_url": fit_data.get("job_url"),
+            "date_discovered": date.today().isoformat(),
+            "fit_score": fit_data.get("fit_score"),
+            "fit_threshold": fit_data.get("fit_threshold", fit_threshold),
+            "recommendation": fit_data.get("recommendation"),
+            "decision_override": 0,
+            "top_strengths": str(fit_data.get("top_strengths", [])) if fit_data.get("top_strengths") else None,
+            "top_gaps": str(fit_data.get("top_gaps", [])) if fit_data.get("top_gaps") else None,
+            "status": "New",
+            "archived": 0,
+            "date_created": date.today().isoformat(),
+            "date_modified": date.today().isoformat(),
+        }
+
+        try:
+            cols = ", ".join(record.keys())
+            placeholders = ", ".join(["?" for _ in record])
+            sql = f"INSERT OR REPLACE INTO opportunities ({cols}) VALUES ({placeholders})"
+            with _connect(db_path) as conn:
+                conn.execute(sql, list(record.values()))
+                conn.commit()
+            report["records_indexed"] += 1
+        except Exception as e:
+            report["failures"].append(f"Failed to index '{folder_name}': {e}")
+
+    return report
