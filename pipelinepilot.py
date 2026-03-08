@@ -577,6 +577,47 @@ class PipelinePilotApp(ctk.CTk):
             font=ctk.CTkFont(size=12),
         ).pack(anchor="w")
 
+        # ── Rebuild Index ──
+        self._settings_section(frame, "Database")
+
+        rebuild_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        rebuild_frame.pack(fill="x", pady=(0, 20))
+
+        rb_inner = ctk.CTkFrame(rebuild_frame, fg_color="transparent")
+        rb_inner.pack(fill="x", padx=16, pady=16)
+
+        ctk.CTkLabel(
+            rb_inner,
+            text="Rebuild the database index from the filesystem. Use this to import\n"
+                 "opportunities that were added outside of PipelinePilot, or to recover\n"
+                 "from database corruption. Existing records are preserved (INSERT OR REPLACE).",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+
+        self._rebuild_status_var = ctk.StringVar(value="")
+        self._rebuild_status_lbl = ctk.CTkLabel(
+            rb_inner,
+            textvariable=self._rebuild_status_var,
+            font=ctk.CTkFont(size=11),
+            text_color=C_SUCCESS,
+            justify="left",
+        )
+        self._rebuild_status_lbl.pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkButton(
+            rb_inner,
+            text="↺  Rebuild Index",
+            command=self._rebuild_index,
+            fg_color=C_PANEL,
+            hover_color=C_BLUE,
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            width=160,
+            height=36,
+        ).pack(anchor="w")
+
         # Save button
         ctk.CTkButton(
             frame,
@@ -588,6 +629,39 @@ class PipelinePilotApp(ctk.CTk):
             width=160,
             height=40,
         ).pack(anchor="w", pady=(8, 0))
+
+    def _rebuild_index(self):
+        """FR-25 through FR-29: Trigger database rebuild from filesystem."""
+        if not self.db_path or not config.is_configured(self.cfg):
+            messagebox.showerror("Not Configured", "Job search root folder must be set before rebuilding.")
+            return
+
+        self._rebuild_status_var.set("Rebuilding — please wait...")
+        self._rebuild_status_lbl.configure(text_color=C_WARNING)
+        self.update_idletasks()
+
+        try:
+            report = database.rebuild_index(
+                self.db_path,
+                self.cfg["job_search_root"],
+                fit_threshold=self.cfg.get("fit_threshold", 0.65),
+            )
+            summary = (
+                f"Done — {report['records_indexed']} indexed, "
+                f"{report['folders_scanned']} scanned, "
+                f"{len(report['warnings'])} warnings, "
+                f"{len(report['failures'])} failures."
+            )
+            self._rebuild_status_var.set(summary)
+            self._rebuild_status_lbl.configure(text_color=C_SUCCESS)
+
+            if report["warnings"] or report["failures"]:
+                detail = "\n".join(report["warnings"] + report["failures"])
+                messagebox.showwarning("Rebuild Complete with Issues", f"{summary}\n\n{detail}")
+        except Exception as e:
+            self._rebuild_status_var.set(f"Rebuild failed: {e}")
+            self._rebuild_status_lbl.configure(text_color=C_ACCENT)
+            messagebox.showerror("Rebuild Failed", str(e))
 
     def _settings_section(self, parent, title: str):
         ctk.CTkLabel(
