@@ -896,12 +896,12 @@ class CaptureDialog(ctk.CTkToplevel):
             }
             database.create_opportunity(self.db_path, record)
 
+            self.destroy()
             messagebox.showinfo(
                 "Captured",
                 f"Opportunity captured successfully.\n\nFolder: {folder_name}\n\n"
                 "A blank job description document has been created in the folder.",
             )
-            self.destroy()
 
         except Exception as e:
             messagebox.showerror("Capture Failed", f"An error occurred:\n\n{e}")
