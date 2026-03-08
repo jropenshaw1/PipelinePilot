@@ -134,6 +134,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# PipelinePilot local overrides — not for public repo
+launch_local.bat
+pipelinepilot.config
+
 # Environments
 .env
 .envrc
