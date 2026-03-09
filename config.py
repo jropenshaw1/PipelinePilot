@@ -19,6 +19,8 @@ DEFAULTS = {
     "job_search_root": "",
     "fit_threshold": DEFAULT_FIT_THRESHOLD,
     "follow_up_offset_days": DEFAULT_FOLLOW_UP_OFFSET_DAYS,
+    "resume_path": "",
+    "anthropic_api_key": "",
 }
 
 
