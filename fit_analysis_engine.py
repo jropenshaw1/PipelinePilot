@@ -104,6 +104,9 @@ Mix behavioral (STAR format), technical, and situational questions relevant to t
 
 Cover letter: Write a full, specific, professional cover letter (3-4 paragraphs). No placeholders.
 Reference actual accomplishments from the resume. Do not use "I am excited to apply" filler.
+CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user
+message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the
+cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
 Resume highlights: Provide 5-6 tailored bullet points that surface the most relevant experience
 for this specific role, drawn from the resume. These will be prepended to the master resume.
@@ -172,16 +175,22 @@ def find_jd_file(folder_path: Path) -> Path:
 
 # ─────────────────────────────────────────────
 # API call
+# company and role are passed explicitly so the model has the authoritative
+# values as named facts — not something it must infer from JD text.
 # ─────────────────────────────────────────────
 
-def _call_api(client, jd_text: str, resume_text: str) -> dict:
+def _call_api(client, jd_text: str, resume_text: str, company: str, role: str) -> dict:
     message = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         messages=[{
             "role": "user",
-            "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB DESCRIPTION:\n{jd_text}"
+            "content": (
+                f"COMPANY: {company}\n"
+                f"ROLE: {role}\n\n"
+                f"RESUME:\n{resume_text}\n\n---\n\nJOB DESCRIPTION:\n{jd_text}"
+            )
         }]
     )
     raw = message.content[0].text.strip()
@@ -306,7 +315,9 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
     doc.add_paragraph(f"Dear {company} Hiring Team,")
     doc.add_paragraph()
 
-    # Strip any salutation/closing the API included — we add those structurally
+    # Strip any salutation/closing the API included — we add those structurally.
+    # company and role are passed explicitly to _call_api so the model has the
+    # authoritative title as a named fact — no regex correction needed here.
     _salutation_patterns = ("dear ", "sincerely", "best regards", "regards,")
     body_lines = [
         line for line in result["cover_letter"].split("\n")
@@ -629,9 +640,11 @@ def run_fit_analysis(
                 return
             resume_text = extract_docx_text(resume_file)
 
-            # Single API call — all artifacts in one response
+            # Single API call — all artifacts in one response.
+            # company and role passed explicitly so the model has authoritative
+            # values as named facts at the top of the user message.
             _p("Running fit analysis...", "All agents (single call)")
-            result = _call_api(client, jd_text[:8000], resume_text[:6000])
+            result = _call_api(client, jd_text[:8000], resume_text[:6000], company, role)
 
             recommendation = (
                 "APPLY" if result["fit_score"] >= 0.75 else
