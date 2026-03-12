@@ -1,16 +1,16 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
-**Version:** 1.0  
-**Date:** March 7, 2026  
-**Author:** Jonathan Openshaw  
-**Standard:** Michael Nygard ADR Format  
+**Version:** 1.1
+**Date:** March 12, 2026
+**Author:** Jonathan Openshaw
+**Standard:** Michael Nygard ADR Format
 **Status:** Approved
 
 ---
 
 ## ADR-001: Filesystem as Source of Truth
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -37,7 +37,7 @@ The OneDrive filesystem is the source of truth. SQLite is a derived, rebuildable
 
 ## ADR-002: UI Framework — Python + CustomTkinter
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -71,7 +71,7 @@ Python + CustomTkinter for the GUI layer.
 
 ## ADR-003: SQLite as the Structured Data Index
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -103,7 +103,7 @@ SQLite via Python's standard library `sqlite3` module.
 
 ## ADR-004: Dual Artifact Output from Job Fit Analyst (.docx + .md)
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -135,7 +135,7 @@ Job Fit Analyst shall output two fit analysis artifacts per run:
 
 ## ADR-005: No Automated Email Processing
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -160,8 +160,8 @@ No automated email processing. Email content is captured manually via paste-into
 
 ## ADR-006: Reference and Index, Not Reinterpret
 
-**Date:** March 7, 2026  
-**Status:** Accepted
+**Date:** March 7, 2026
+**Status:** Superseded by ADR-008
 
 ### Context
 When integrating with Job Fit Analyst output, two approaches were considered:
@@ -183,11 +183,13 @@ PipelinePilot shall never generate its own AI reasoning content. It shall only i
 - All AI quality improvements flow through the Job Fit Analyst skill, not PipelinePilot
 - `fit_analysis.md` is the single explainability record for every opportunity
 
+*Superseded by ADR-008, March 12, 2026. The core principle (one authoritative AI artifact per role) remains in force. The constraint (no AI in PipelinePilot) is lifted.*
+
 ---
 
 ## ADR-007: Deterministic, Idempotent Rebuild Index
 
-**Date:** March 7, 2026  
+**Date:** March 7, 2026
 **Status:** Accepted
 
 ### Context
@@ -210,4 +212,47 @@ Given that the filesystem is the source of truth and the database is derived, a 
 
 ---
 
-*These ADRs were produced from a structured requirements interview and cross-platform AI design session (Claude + ChatGPT) conducted March 7, 2026. All decisions captured in OpenBrain with [source:claude] and [source:chatgpt] tags.*
+## ADR-008: Embedded Fit Analysis Engine (Supersedes ADR-006)
+
+**Date:** March 12, 2026
+**Status:** Accepted
+
+### Context
+
+ADR-006 established that PipelinePilot would never generate its own AI reasoning content. The original design called for fit analysis to be produced exclusively by the Job Fit Analyst Claude skill, invoked externally, with PipelinePilot only indexing the resulting filesystem artifacts.
+
+This decision rested on two assumptions:
+
+1. Clean separation of concerns required a hard boundary — Job Fit Analyst owns reasoning, PipelinePilot owns lifecycle management
+2. PipelinePilot was intended for free distribution as a standalone tool with no dependency on Job Fit Analyst, minimizing setup friction for end users
+
+After several days of production use, reality challenged both assumptions. The external invocation model created real friction: switching to Claude.ai to run Job Fit Analyst and then returning to PipelinePilot interrupted the job search workflow at exactly the wrong moment. The tool was demonstrably more useful than anticipated. Optimizing for that usefulness outweighed the original simplicity goal.
+
+Critically: both PipelinePilot and Job Fit Analyst are independently developed, freely distributed, open-source projects by the same author. The dependency is not proprietary. End users who want integrated fit analysis are asked to clone two public repos and configure one API key — a real but manageable cost.
+
+### Decision
+
+Embed `fit_analysis_engine.py` directly into PipelinePilot as a first-class integrated module. Fit analysis is initiated from within the PipelinePilot UI in a single action, requiring only a locally configured Anthropic API key.
+
+The core architectural principle from ADR-006 is preserved: one authoritative AI reasoning artifact per role, no competing or duplicate analysis. The constraint it imposed (no AI API calls inside PipelinePilot) is lifted.
+
+### Rationale
+
+- Production use demonstrated the tool was valuable enough to optimize. Friction removed is value delivered.
+- Both components are freely distributed — the dependency is transparent and the cost to end users is documented explicitly
+- `fit_analysis_engine.py` is a distinct, isolated module with a documented interface. The boundary is maintained even though the invocation mechanism changed.
+- The principle that matters (one authoritative artifact per role, no drift between competing reasoning sources) is fully preserved
+- The original free-distribution intent is unchanged — installation now requires both repos and an API key, clearly documented in the README
+
+### Consequences
+
+- End users who want integrated fit analysis must: clone both repositories, install dependencies for both, and configure a valid Anthropic API key locally
+- Users who want PipelinePilot as a standalone lifecycle tracker without AI analysis can still use it that way — fit analysis is an optional feature, not a requirement
+- `requirements.txt` must include the `anthropic` library
+- ADR-006 is superseded. The principle it protected remains. The constraint it imposed is lifted.
+- Future changes to fit analysis logic require changes only in `fit_analysis_engine.py` — the module boundary is documented and maintained
+
+---
+
+*ADRs 001–007 produced from a structured requirements interview and cross-platform AI design session (Claude + ChatGPT) conducted March 7, 2026.*
+*ADR-008 added March 12, 2026, following several days of production use. All decisions captured in OpenBrain with [source:claude] tags.*
