@@ -32,6 +32,24 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 # ─────────────────────────────────────────────
+# Filename sanitization
+# Mirrors filesystem.py sanitize_component():
+# strips spaces, commas, periods, slashes,
+# ampersands, and any non-alphanumeric chars.
+# ─────────────────────────────────────────────
+
+_STRIP_CHARS = re.compile(r"[&,./\\]")
+_KEEP_CHARS  = re.compile(r"[^A-Za-z0-9\-]")
+
+
+def _sanitize(text: str) -> str:
+    text = text.strip().replace(" ", "")
+    text = _STRIP_CHARS.sub("", text)
+    text = _KEEP_CHARS.sub("", text)
+    return text
+
+
+# ─────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────
 
@@ -270,7 +288,7 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
     _bullet(doc, "Review all AI-generated content — read the cover letter and tailored resume carefully before submitting. Do not send unreviewed AI output to a potential employer.")
     _bullet(doc, "If you update your resume based on any gap items above, rerun this analysis before applying.")
 
-    out = folder_path / f"FitAnalysis_{company.replace(' ', '')}.docx"
+    out = folder_path / f"FitAnalysis_{_sanitize(company)}.docx"
     doc.save(str(out))
     return out
 
@@ -302,7 +320,7 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
     doc.add_paragraph()
     doc.add_paragraph()  # blank line for handwritten or typed signature
 
-    out = folder_path / f"CoverLetter_{company.replace(' ', '')}_{role.replace(' ', '')}.docx"
+    out = folder_path / f"CoverLetter_{_sanitize(company)}_{_sanitize(role)}.docx"
     doc.save(str(out))
     return out
 
@@ -313,7 +331,7 @@ def generate_tailored_resume(result: dict, company: str, role: str,
     Copy master resume, then prepend a tailored highlights section at the top.
     Matches the Streamlit approach: master resume is the base, not rebuilt from scratch.
     """
-    out = folder_path / f"Resume_{company.replace(' ', '')}_{role.replace(' ', '')}.docx"
+    out = folder_path / f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
     shutil.copy2(resume_path, str(out))
 
     doc = Document(str(out))
@@ -427,7 +445,7 @@ def generate_interview_guide(result: dict, company: str, role: str, folder_path:
         strat_p.add_run(item.get("strategy", ""))
         doc.add_paragraph()
 
-    out = folder_path / f"InterviewGuide_{company.replace(' ', '')}_{role.replace(' ', '')}.docx"
+    out = folder_path / f"InterviewGuide_{_sanitize(company)}_{_sanitize(role)}.docx"
     doc.save(str(out))
     return out
 
