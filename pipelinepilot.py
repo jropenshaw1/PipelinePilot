@@ -12,6 +12,7 @@ from pathlib import Path
 import config
 import database
 import filesystem
+import fit_analysis_engine
 from models import (
     APP_NAME,
     APP_VERSION,
@@ -211,7 +212,7 @@ class PipelinePilotApp(ctk.CTk):
         # Header
         ctk.CTkLabel(
             scroll,
-            text="Pipeline Dashboard",
+            text="PipelinePilot Dashboard",
             font=ctk.CTkFont(size=24, weight="bold"),
             text_color=C_TEXT,
         ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 20))
@@ -598,6 +599,52 @@ class PipelinePilotApp(ctk.CTk):
             font=ctk.CTkFont(size=12),
         ).pack(anchor="w")
 
+        # ── Resume Path ──
+        self._settings_section(frame, "Master Resume Path")
+
+        rp_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        rp_frame.pack(fill="x", pady=(0, 20))
+        rp_inner = ctk.CTkFrame(rp_frame, fg_color="transparent")
+        rp_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            rp_inner,
+            text="Path to your master resume .docx (used by the fit analysis engine):",
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 8))
+        rp_row = ctk.CTkFrame(rp_inner, fg_color="transparent")
+        rp_row.pack(anchor="w")
+        self._resume_path_var = ctk.StringVar(value=self.cfg.get("resume_path", ""))
+        ctk.CTkEntry(
+            rp_row, textvariable=self._resume_path_var, width=440, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            rp_row, text="Browse", command=self._browse_resume, width=90, fg_color=C_PANEL,
+        ).pack(side="left")
+
+        # ── Anthropic API Key ──
+        self._settings_section(frame, "Anthropic API Key")
+
+        key_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        key_frame.pack(fill="x", pady=(0, 20))
+        key_inner = ctk.CTkFrame(key_frame, fg_color="transparent")
+        key_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            key_inner,
+            text="Optional — if blank, engine reads ClaudeAPIkey.txt from your job search root folder.",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+        ).pack(anchor="w", pady=(0, 8))
+        self._api_key_var = ctk.StringVar(value=self.cfg.get("anthropic_api_key", ""))
+        ctk.CTkEntry(
+            key_inner,
+            textvariable=self._api_key_var,
+            width=540,
+            font=ctk.CTkFont(size=11, family="Courier"),
+            show="•",
+        ).pack(anchor="w")
+
         # ── Rebuild Index ──
         self._settings_section(frame, "Database")
 
@@ -721,6 +768,15 @@ class PipelinePilotApp(ctk.CTk):
 
     # ── Config helpers ─────────────────────────
 
+    def _browse_resume(self):
+        """Browse and set the master resume path."""
+        path = filedialog.askopenfilename(
+            title="Select Master Resume",
+            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
+        )
+        if path:
+            self._resume_path_var.set(path)
+
     def _configure_root_folder(self):
         """Browse and set the job search root folder."""
         folder = filedialog.askdirectory(title="Select Job Search Root Folder")
@@ -767,6 +823,8 @@ class PipelinePilotApp(ctk.CTk):
 
         self.cfg["fit_threshold"] = threshold
         self.cfg["follow_up_offset_days"] = offset
+        self.cfg["resume_path"] = self._resume_path_var.get().strip()
+        self.cfg["anthropic_api_key"] = self._api_key_var.get().strip()
         config.save_config(self.cfg)
         messagebox.showinfo("Saved", "Settings saved successfully.")
 
@@ -1075,7 +1133,27 @@ class DetailWindow(ctk.CTkToplevel):
         self._field_text(main, "Interview Date", "interview_date", placeholder="YYYY-MM-DD")
 
         # ── Fit Analysis ──
-        self._section(main, "Fit Analysis (read-only — populated by Job Fit Analyst)")
+        fit_header_row = ctk.CTkFrame(main, fg_color="transparent")
+        fit_header_row.pack(fill="x", pady=(16, 4))
+        ctk.CTkLabel(
+            fit_header_row,
+            text="Fit Analysis (populated by Job Fit Analyst)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C_BLUE,
+        ).pack(side="left")
+        ctk.CTkButton(
+            fit_header_row,
+            text="⚡  Run Fit Analysis",
+            command=self._run_fit_analysis,
+            fg_color=C_ACCENT,
+            hover_color="#c73652",
+            text_color="white",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            height=30,
+            width=150,
+            corner_radius=6,
+        ).pack(side="right")
+        ctk.CTkFrame(main, height=1, fg_color=C_PANEL).pack(fill="x", pady=(0, 8))
         fit = opp.get("fit_score")
         threshold = opp.get("fit_threshold", 0.65)
         fit_display = f"{fit:.0%}" if fit is not None else "Not yet analyzed"
@@ -1235,6 +1313,28 @@ class DetailWindow(ctk.CTkToplevel):
         messagebox.showinfo("Saved", "Changes saved successfully.")
         self.destroy()
 
+    def _run_fit_analysis(self):
+        """Validate config and launch the automated fit analysis."""
+        cfg = self.cfg
+        resume_path = cfg.get("resume_path", "").strip()
+        if not resume_path:
+            messagebox.showerror(
+                "Resume Path Required",
+                "Set your master resume path in Settings → Resume Path."
+            )
+            return
+        from pathlib import Path as _Path
+        api_key = cfg.get("anthropic_api_key", "").strip()
+        key_file = _Path(cfg["job_search_root"]) / "ClaudeAPIkey.txt"
+        if not api_key and not key_file.exists():
+            messagebox.showerror(
+                "API Key Required",
+                f"Add your Anthropic API key to:\n{key_file}\n\n"
+                "Or set it in Settings → Anthropic API Key."
+            )
+            return
+        AnalysisProgressDialog(self, self.opp, self.db_path, self.cfg)
+
     def _archive(self):
         """FR-11: Soft-delete the opportunity."""
         if messagebox.askyesno(
@@ -1244,6 +1344,164 @@ class DetailWindow(ctk.CTkToplevel):
         ):
             database.archive_opportunity(self.db_path, self.folder_name)
             self.destroy()
+
+
+# ─────────────────────────────────────────────
+# Analysis Progress Dialog
+# ─────────────────────────────────────────────
+
+class AnalysisProgressDialog(ctk.CTkToplevel):
+    """
+    Progress dialog for the automated fit analysis.
+    Kicks off fit_analysis_engine in a background thread.
+    Shows live step-by-step status. On success displays score + file list,
+    then closes and refreshes the parent detail view.
+    """
+
+    def __init__(self, parent, opp: dict, db_path, cfg: dict):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.opp = opp
+        self.db_path = db_path
+        self.cfg = cfg
+        self._done = False
+
+        self.title(f"Analyzing — {opp['company_name']}")
+        self.geometry("520x440")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_close_attempt)
+
+        self._build()
+        self._start()
+
+    def _build(self):
+        f = ctk.CTkFrame(self, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=28, pady=28)
+
+        ctk.CTkLabel(
+            f, text=self.opp["company_name"],
+            font=ctk.CTkFont(size=18, weight="bold"), text_color=C_TEXT,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            f, text=self.opp["role_title"],
+            font=ctk.CTkFont(size=12), text_color=C_MUTED,
+        ).pack(anchor="w", pady=(0, 20))
+
+        self._step_var = ctk.StringVar(value="Starting...")
+        ctk.CTkLabel(
+            f, textvariable=self._step_var,
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=C_BLUE,
+        ).pack(anchor="w")
+
+        self._detail_var = ctk.StringVar(value="")
+        ctk.CTkLabel(
+            f, textvariable=self._detail_var,
+            font=ctk.CTkFont(size=11), text_color=C_MUTED,
+        ).pack(anchor="w", pady=(2, 14))
+
+        self._progress = ctk.CTkProgressBar(f, width=460)
+        self._progress.pack(anchor="w")
+        self._progress.configure(mode="indeterminate")
+        self._progress.start()
+
+        # Results card (shown on success)
+        self._results_card = ctk.CTkFrame(f, fg_color=C_CARD, corner_radius=10)
+        self._score_var = ctk.StringVar()
+        ctk.CTkLabel(
+            self._results_card, textvariable=self._score_var,
+            font=ctk.CTkFont(size=22, weight="bold"), text_color=C_SUCCESS,
+        ).pack(pady=(14, 2))
+        self._rec_var = ctk.StringVar()
+        ctk.CTkLabel(
+            self._results_card, textvariable=self._rec_var,
+            font=ctk.CTkFont(size=13), text_color=C_TEXT,
+        ).pack()
+        self._files_var = ctk.StringVar()
+        ctk.CTkLabel(
+            self._results_card, textvariable=self._files_var,
+            font=ctk.CTkFont(size=10), text_color=C_MUTED, justify="left",
+        ).pack(padx=14, pady=(6, 14))
+
+        # Error label (shown on failure)
+        self._error_var = ctk.StringVar()
+        self._error_lbl = ctk.CTkLabel(
+            f, textvariable=self._error_var,
+            font=ctk.CTkFont(size=11), text_color=C_ACCENT,
+            wraplength=460, justify="left",
+        )
+
+        # Close button (shown after completion)
+        self._close_btn = ctk.CTkButton(
+            f, text="Close", command=self._finish,
+            fg_color=C_ACCENT, hover_color="#c73652",
+            font=ctk.CTkFont(size=13, weight="bold"), width=120, height=36,
+        )
+
+    def _start(self):
+        fit_analysis_engine.run_fit_analysis(
+            db_path=self.db_path,
+            job_search_root=self.cfg["job_search_root"],
+            folder_name=self.opp["folder_name"],
+            resume_path=self.cfg.get("resume_path", ""),
+            api_key=self.cfg.get("anthropic_api_key", ""),
+            fit_threshold=self.cfg.get("fit_threshold", 0.65),
+            on_success=self._handle_success,
+            on_error=self._handle_error,
+            progress_cb=self._handle_progress,
+        )
+
+    def _handle_progress(self, step: str, detail: str = ""):
+        self.after(0, lambda: self._step_var.set(step))
+        self.after(0, lambda: self._detail_var.set(detail))
+
+    def _handle_success(self, result: dict, output_files):
+        def _update():
+            self._done = True
+            self._progress.stop()
+            self._progress.set(1.0)
+            self._progress.configure(mode="determinate")
+            self._step_var.set("Analysis complete.")
+            self._detail_var.set("")
+            rec = ("APPLY" if result["fit_score"] >= 0.75 else
+                   "HOLD" if result["fit_score"] >= 0.60 else "PASS")
+            self._score_var.set(f"Fit Score: {result['fit_score']:.0%}")
+            self._rec_var.set(f"Recommendation: {rec}")
+            self._files_var.set(
+                "Files written to opportunity folder:\n" +
+                "\n".join(f"  • {f.name}" for f in output_files)
+            )
+            self._results_card.pack(fill="x", pady=(16, 8))
+            self._close_btn.pack(anchor="w", pady=(8, 0))
+        self.after(0, _update)
+
+    def _handle_error(self, message: str):
+        def _update():
+            self._done = True
+            self._progress.stop()
+            self._step_var.set("Analysis failed.")
+            self._detail_var.set("")
+            self._error_var.set(message)
+            self._error_lbl.pack(anchor="w", pady=(14, 8))
+            self._close_btn.pack(anchor="w", pady=(8, 0))
+        self.after(0, _update)
+
+    def _on_close_attempt(self):
+        if self._done:
+            self._finish()
+        else:
+            messagebox.showwarning("Analysis Running", "Please wait for the analysis to complete.")
+
+    def _finish(self):
+        self.destroy()
+        if hasattr(self.parent_window, "opp") and hasattr(self.parent_window, "_build"):
+            self.parent_window.opp = database.get_opportunity(
+                self.db_path, self.opp["folder_name"]
+            )
+            for w in self.parent_window.winfo_children():
+                w.destroy()
+            self.parent_window._build()
 
 
 # ─────────────────────────────────────────────
