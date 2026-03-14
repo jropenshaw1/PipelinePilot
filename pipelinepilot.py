@@ -230,11 +230,17 @@ class PipelinePilotApp(ctk.CTk):
                 "Follow-ups Due",
                 str(metrics["follow_ups_due"]),
                 C_ACCENT if metrics["follow_ups_due"] > 0 else C_SUCCESS,
+                self._show_followups if metrics["follow_ups_due"] > 0 else None,
             ),
         ]
 
-        for col, (label, value, color) in enumerate(cards):
-            self._metric_card(scroll, label, value, color, row=1, col=col)
+        for col, card_args in enumerate(cards):
+            if len(card_args) == 4:
+                label, value, color, command = card_args
+                self._metric_card(scroll, label, value, color, row=1, col=col, command=command)
+            else:
+                label, value, color = card_args
+                self._metric_card(scroll, label, value, color, row=1, col=col)
 
         # Status breakdown
         ctk.CTkLabel(
@@ -760,6 +766,111 @@ class PipelinePilotApp(ctk.CTk):
 
     # ── Detail View ────────────────────────────
 
+    def _show_followups(self):
+        """Drill-down view: opportunities with follow-up dates on or before today."""
+        self._clear_content()
+
+        import sqlite3
+        today = date.today().isoformat()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT * FROM opportunities
+            WHERE follow_up_date IS NOT NULL
+              AND follow_up_date <= ?
+              AND archived = 0
+              AND status NOT IN ('Passed','Offer','Closed','Rejected')
+            ORDER BY follow_up_date ASC
+        """, (today,)).fetchall()
+        conn.close()
+        opportunities = [dict(r) for r in rows]
+
+        outer = ctk.CTkFrame(self.content, fg_color="transparent")
+        outer.pack(fill="both", expand=True, padx=24, pady=24)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        # Header
+        header = ctk.CTkFrame(outer, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+
+        ctk.CTkLabel(
+            header,
+            text=f"Follow-ups Due  ({len(opportunities)})",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=C_ACCENT,
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            header,
+            text="← Dashboard",
+            command=self._show_dashboard,
+            fg_color="transparent",
+            border_color=C_BLUE,
+            border_width=1,
+            text_color=C_BLUE,
+            width=120,
+            height=32,
+        ).pack(side="right")
+
+        list_container = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        list_container.grid(row=1, column=0, sticky="nsew")
+        list_container.columnconfigure(0, weight=1)
+        self._list_container = list_container
+
+        if not opportunities:
+            ctk.CTkLabel(
+                list_container,
+                text="No follow-ups due. You're all caught up.",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=13),
+            ).pack(pady=40)
+            return
+
+        # Column headers
+        header_row = ctk.CTkFrame(list_container, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, 4))
+        for width, lbl in [(280, "Company / Role"), (120, "Status"), (100, "Follow-up Date"), (100, "Fit Score"), (80, "Applied")]:
+            ctk.CTkLabel(
+                header_row,
+                text=lbl,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=C_MUTED,
+                width=width,
+                anchor="w",
+            ).pack(side="left", padx=4)
+
+        for opp in opportunities:
+            row = ctk.CTkFrame(list_container, fg_color=C_CARD, corner_radius=8, cursor="hand2")
+            row.pack(fill="x", pady=3)
+            row.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+
+            name_frame = ctk.CTkFrame(row, fg_color="transparent", width=280)
+            name_frame.pack(side="left", padx=(12, 4), pady=10)
+            name_frame.pack_propagate(False)
+            ctk.CTkLabel(name_frame, text=opp["company_name"], font=ctk.CTkFont(size=13, weight="bold"), text_color=C_TEXT, anchor="w").pack(fill="x")
+            ctk.CTkLabel(name_frame, text=opp["role_title"], font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(fill="x")
+
+            status = opp.get("status", "New")
+            ctk.CTkLabel(row, text=status, font=ctk.CTkFont(size=11), fg_color=C_BLUE, corner_radius=6, text_color="white", width=120).pack(side="left", padx=4)
+
+            fu_date = opp.get("follow_up_date", "—")
+            days_overdue = (date.today() - date.fromisoformat(fu_date)).days if fu_date and fu_date != "—" else 0
+            fu_color = C_ACCENT if days_overdue > 0 else C_WARNING
+            fu_text = f"{fu_date}  ({days_overdue}d overdue)" if days_overdue > 0 else fu_date
+            ctk.CTkLabel(row, text=fu_text, font=ctk.CTkFont(size=11), text_color=fu_color, width=100).pack(side="left", padx=4)
+
+            fit = opp.get("fit_score")
+            fit_text = f"{fit:.0%}" if fit is not None else "—"
+            fit_color = C_SUCCESS if (fit and fit >= opp.get("fit_threshold", 0.65)) else C_MUTED
+            ctk.CTkLabel(row, text=fit_text, font=ctk.CTkFont(size=11), text_color=fit_color, width=100).pack(side="left", padx=4)
+
+            ctk.CTkLabel(row, text=opp.get("date_applied") or "—", font=ctk.CTkFont(size=11), text_color=C_MUTED, width=80).pack(side="left", padx=4)
+
+            for child in row.winfo_children():
+                child.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+
     def _open_detail(self, folder_name: str):
         """FR-08: Open full detail/edit screen for an opportunity."""
         detail = DetailWindow(self, folder_name, self.db_path, self.cfg)
@@ -830,24 +941,36 @@ class PipelinePilotApp(ctk.CTk):
 
     # ── Widget helpers ─────────────────────────
 
-    def _metric_card(self, parent, label: str, value: str, color: str, row: int, col: int):
-        """Render a single dashboard metric card."""
-        card = ctk.CTkFrame(parent, fg_color=C_CARD, corner_radius=12)
+    def _metric_card(self, parent, label: str, value: str, color: str, row: int, col: int, command=None):
+        """Render a single dashboard metric card. Pass command to make it clickable."""
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=C_CARD,
+            corner_radius=12,
+            cursor="hand2" if command else "arrow",
+        )
         card.grid(row=row, column=col, padx=8, pady=4, sticky="ew")
 
-        ctk.CTkLabel(
+        value_lbl = ctk.CTkLabel(
             card,
             text=value,
             font=ctk.CTkFont(size=32, weight="bold"),
             text_color=color,
-        ).pack(pady=(16, 4))
+        )
+        value_lbl.pack(pady=(16, 4))
 
-        ctk.CTkLabel(
+        hint = f"{label}  ↗" if command else label
+        label_lbl = ctk.CTkLabel(
             card,
-            text=label,
+            text=hint,
             font=ctk.CTkFont(size=12),
             text_color=C_MUTED,
-        ).pack(pady=(0, 16))
+        )
+        label_lbl.pack(pady=(0, 16))
+
+        if command:
+            for widget in (card, value_lbl, label_lbl):
+                widget.bind("<Button-1>", lambda e, cmd=command: cmd())
 
     def _status_pill(self, parent, status: str, count: int, row: int, col: int):
         """Render a status count pill in the dashboard."""
@@ -961,7 +1084,7 @@ class CaptureDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=11),
         ).pack(anchor="w")
 
-        existing_box = ctk.CTkTextbox(frame, width=400, height=100, font=ctk.CTkFont(size=10, family="Courier"), state="normal")
+        existing_box = ctk.CTkTextbox(frame, width=400, height=120, font=ctk.CTkFont(size=13, family="Courier"), state="normal")
         existing_box.pack(anchor="w", pady=(2, 20))
         existing = filesystem.get_existing_folders(self.cfg["job_search_root"])
         existing_box.insert("end", "\n".join(existing) if existing else "(none yet)")
