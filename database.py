@@ -45,6 +45,48 @@ CREATE TABLE IF NOT EXISTS opportunities (
 )
 """
 
+INTERVIEWS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS interviews (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    opportunity_folder_name TEXT NOT NULL REFERENCES opportunities(folder_name) ON DELETE CASCADE,
+    interview_type          TEXT CHECK (interview_type IN (
+        'Phone Screen',
+        'Recruiter Screen',
+        'Hiring Manager',
+        'Technical Interview',
+        'Panel Interview',
+        'Onsite Interview',
+        'Offer Discussion',
+        'Other'
+    )),
+    scheduled_date          TEXT,
+    duration_minutes        INTEGER,
+    interviewer_name        TEXT,
+    interviewer_title       TEXT,
+    status                  TEXT NOT NULL DEFAULT 'Scheduled' CHECK (status IN (
+        'Scheduled',
+        'Completed',
+        'No Show',
+        'Cancelled'
+    )),
+    notes                   TEXT,
+    feedback                TEXT,
+    rating                  INTEGER CHECK (rating IS NULL OR rating BETWEEN 1 AND 5),
+    date_created            TEXT NOT NULL,
+    date_modified           TEXT NOT NULL
+);
+"""
+
+
+def migrate_add_interviews_table(conn: sqlite3.Connection) -> None:
+    """
+    Idempotent migration to add the interviews table.
+    Safe to call on existing databases — CREATE TABLE IF NOT EXISTS
+    means it will no-op if the table already exists.
+    """
+    with conn:
+        conn.executescript(INTERVIEWS_SCHEMA)
+
 
 def get_db_path(job_search_root: str) -> Path:
     return Path(job_search_root) / DB_FILENAME
@@ -263,8 +305,6 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
                 ).fetchone()
 
                 if existing:
-                    # Record exists — preserve all user-entered lifecycle data.
-                    # Only refresh fields that come from the filesystem/YAML.
                     fs_fields = {
                         "company_name": record["company_name"],
                         "role_title": record["role_title"],
@@ -281,7 +321,6 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
                         list(fs_fields.values()) + [folder_name],
                     )
                 else:
-                    # New record — full insert.
                     cols = ", ".join(record.keys())
                     placeholders = ", ".join(["?" for _ in record])
                     conn.execute(
