@@ -137,6 +137,7 @@ celerybeat.pid
 # PipelinePilot local overrides — not for public repo
 launch_local.bat
 pipelinepilot.config
+commit_*.sh
 
 # Environments
 .env
