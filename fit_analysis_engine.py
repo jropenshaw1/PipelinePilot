@@ -108,9 +108,6 @@ CRITICAL — Job title accuracy: The authoritative job title is provided at the 
 message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the
 cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
-Resume highlights: Provide 5-6 tailored bullet points that surface the most relevant experience
-for this specific role, drawn from the resume. These will be prepended to the master resume.
-
 You must respond with a JSON object and nothing else. No markdown, no preamble.
 The JSON must have exactly this structure:
 {
@@ -339,80 +336,13 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
 def generate_tailored_resume(result: dict, company: str, role: str,
                               folder_path: Path, resume_path: str) -> Path:
     """
-    Copy master resume, then prepend a tailored highlights section at the top.
-    Matches the Streamlit approach: master resume is the base, not rebuilt from scratch.
+    Copy master resume as-is. The master resume (V18+) already contains a
+    tailored professional summary — no prepend block needed or wanted.
+    The resume_highlights field from the API result is surfaced in the
+    FitAnalysis doc instead, keeping the resume clean.
     """
     out = folder_path / f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
     shutil.copy2(resume_path, str(out))
-
-    doc = Document(str(out))
-
-    highlights = result.get("resume_highlights", [])
-    if not highlights:
-        return out
-
-    # Build XML paragraphs to insert at position 0
-    body_elem = doc.element.body
-    insert_before = body_elem[0]  # first existing paragraph
-
-    def _make_para(text: str, bold: bool = False, color_rgb=None,
-                   font_size_pt: int = None, is_bullet: bool = False) -> OxmlElement:
-        p = OxmlElement("w:p")
-        pPr = OxmlElement("w:pPr")
-        if is_bullet:
-            numPr = OxmlElement("w:numPr")
-            ilvl = OxmlElement("w:ilvl")
-            ilvl.set(qn("w:val"), "0")
-            numId = OxmlElement("w:numId")
-            numId.set(qn("w:val"), "1")
-            numPr.append(ilvl)
-            numPr.append(numId)
-            pPr.append(numPr)
-        p.append(pPr)
-
-        r = OxmlElement("w:r")
-        rPr = OxmlElement("w:rPr")
-        if bold:
-            b = OxmlElement("w:b")
-            rPr.append(b)
-        if color_rgb:
-            color = OxmlElement("w:color")
-            color.set(qn("w:val"), "{:02X}{:02X}{:02X}".format(*color_rgb))
-            rPr.append(color)
-        if font_size_pt:
-            sz = OxmlElement("w:sz")
-            sz.set(qn("w:val"), str(font_size_pt * 2))
-            rPr.append(sz)
-        r.append(rPr)
-
-        t = OxmlElement("w:t")
-        t.text = text
-        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        r.append(t)
-        p.append(r)
-        return p
-
-    # Insert: section heading
-    heading_p = _make_para(
-        f"Key Qualifications — {company} | {role}",
-        bold=True,
-        color_rgb=(0x1F, 0x7A, 0x8C),
-        font_size_pt=12,
-    )
-    body_elem.insert(list(body_elem).index(insert_before), heading_p)
-
-    # Insert: bullet highlights
-    for i, bullet_text in enumerate(highlights):
-        bp = _make_para("• " + bullet_text)
-        pos = list(body_elem).index(insert_before)
-        body_elem.insert(pos, bp)
-
-    # Insert: blank separator
-    sep_p = _make_para("")
-    pos = list(body_elem).index(insert_before)
-    body_elem.insert(pos, sep_p)
-
-    doc.save(str(out))
     return out
 
 
