@@ -54,7 +54,7 @@ def _sanitize(text: str) -> str:
 # ─────────────────────────────────────────────
 
 MODEL = "claude-sonnet-4-20250514"
-MAX_TOKENS = 4000
+MAX_TOKENS = 8000
 
 # Default API key location — same as Streamlit version
 _API_KEY_FILENAME = "ClaudeAPIkey.txt"
@@ -76,6 +76,33 @@ def _get_api_key(job_search_root: str, override_key: str = "") -> str:
 
 
 # ─────────────────────────────────────────────
+# Personal context skill loader
+# Reads a SKILL.md from disk and strips YAML
+# frontmatter, returning only the body text.
+# Returns empty string silently if path is
+# not configured, missing, or unreadable.
+# ─────────────────────────────────────────────
+
+def _load_context_skill(skill_path: str) -> str:
+    """Load personal context from a SKILL.md file if path is configured."""
+    if not skill_path or not skill_path.strip():
+        return ""
+    path = Path(skill_path.strip())
+    if not path.exists():
+        return ""
+    try:
+        content = path.read_text(encoding="utf-8")
+        # Strip YAML frontmatter block (--- ... ---)
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                content = parts[2].strip()
+        return content
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────
 # Prompts — single call returns full JSON
 # ─────────────────────────────────────────────
 
@@ -94,7 +121,7 @@ Scoring scale:
 Never inflate a score to be encouraging. Use 0.05 increments only (0.55, 0.70, 0.80 — never 0.67 or 0.83).
 
 IMPORTANT — Degree requirements: Many JDs state "Bachelor's degree OR equivalent combination of education and experience."
-This is NOT a hard degree requirement. The candidate has 28+ years of Fortune 500 IT leadership experience.
+This is NOT a hard degree requirement.
 Treat "equivalent combination" language as satisfied by extensive relevant experience.
 Only flag degree_required as a genuine gap if the JD explicitly states the degree is mandatory with no equivalency option.
 
@@ -176,11 +203,20 @@ def find_jd_file(folder_path: Path) -> Path:
 # values as named facts — not something it must infer from JD text.
 # ─────────────────────────────────────────────
 
-def _call_api(client, jd_text: str, resume_text: str, company: str, role: str) -> dict:
+def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
+              personal_context: str = "") -> dict:
+    effective_prompt = SYSTEM_PROMPT
+    if personal_context:
+        effective_prompt = (
+            SYSTEM_PROMPT
+            + "\n\n---\n\n# PERSONAL CONTEXT\n\n"
+            + personal_context
+            + "\n\n---"
+        )
     message = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        system=effective_prompt,
         messages=[{
             "role": "user",
             "content": (
@@ -524,6 +560,7 @@ def run_fit_analysis(
     on_success,             # callback(result: dict, output_files: list[Path])
     on_error,               # callback(message: str)
     progress_cb=None,       # callback(step: str, detail: str)
+    context_skill_path: str = "",  # path to personal SKILL.md; omit for neutral output
 ) -> threading.Thread:
 
     def _p(step, detail=""):
@@ -574,7 +611,9 @@ def run_fit_analysis(
             # company and role passed explicitly so the model has authoritative
             # values as named facts at the top of the user message.
             _p("Running fit analysis...", "All agents (single call)")
-            result = _call_api(client, jd_text[:8000], resume_text[:6000], company, role)
+            personal_context = _load_context_skill(context_skill_path)
+            result = _call_api(client, jd_text[:8000], resume_text[:6000], company, role,
+                               personal_context=personal_context)
 
             recommendation = (
                 "APPLY" if result["fit_score"] >= 0.75 else
