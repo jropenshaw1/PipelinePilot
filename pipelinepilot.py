@@ -628,6 +628,33 @@ class PipelinePilotApp(ctk.CTk):
             rp_row, text="Browse", command=self._browse_resume, width=90, fg_color=C_PANEL,
         ).pack(side="left")
 
+        # ── Personal Context Skill ──
+        self._settings_section(frame, "Personal Context Skill")
+
+        cs_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        cs_frame.pack(fill="x", pady=(0, 20))
+        cs_inner = ctk.CTkFrame(cs_frame, fg_color="transparent")
+        cs_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            cs_inner,
+            text="Optional — path to a personal SKILL.md file. When set, the fit analysis engine\n"
+                 "loads this file at runtime and injects it into the prompt for personalized output.\n"
+                 "Leave blank for neutral output.",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        cs_row = ctk.CTkFrame(cs_inner, fg_color="transparent")
+        cs_row.pack(anchor="w")
+        self._context_skill_var = ctk.StringVar(value=self.cfg.get("context_skill_path", ""))
+        ctk.CTkEntry(
+            cs_row, textvariable=self._context_skill_var, width=440, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            cs_row, text="Browse", command=self._browse_context_skill, width=90, fg_color=C_PANEL,
+        ).pack(side="left")
+
         # ── Anthropic API Key ──
         self._settings_section(frame, "Anthropic API Key")
 
@@ -888,6 +915,15 @@ class PipelinePilotApp(ctk.CTk):
         if path:
             self._resume_path_var.set(path)
 
+    def _browse_context_skill(self):
+        """Browse and set the personal context skill path."""
+        path = filedialog.askopenfilename(
+            title="Select Personal Context SKILL.md",
+            filetypes=[("Markdown Files", "*.md"), ("All Files", "*.*")],
+        )
+        if path:
+            self._context_skill_var.set(path)
+
     def _configure_root_folder(self):
         """Browse and set the job search root folder."""
         folder = filedialog.askdirectory(title="Select Job Search Root Folder")
@@ -935,6 +971,7 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["fit_threshold"] = threshold
         self.cfg["follow_up_offset_days"] = offset
         self.cfg["resume_path"] = self._resume_path_var.get().strip()
+        self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
         self.cfg["anthropic_api_key"] = self._api_key_var.get().strip()
         config.save_config(self.cfg)
         messagebox.showinfo("Saved", "Settings saved successfully.")
@@ -1573,6 +1610,7 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             on_success=self._handle_success,
             on_error=self._handle_error,
             progress_cb=self._handle_progress,
+            context_skill_path=self.cfg.get("context_skill_path", ""),
         )
 
     def _handle_progress(self, step: str, detail: str = ""):
