@@ -377,8 +377,21 @@ def generate_tailored_resume(result: dict, company: str, role: str,
     The resume_highlights field from the API result is surfaced in the
     FitAnalysis doc instead, keeping the resume clean.
     """
+    # Output is always .docx for ATS compatibility.
+    # If the configured resume_path is .md (API input master), resolve the
+    # .docx sibling at the same location for the copy source.
+    src = Path(resume_path)
+    if src.suffix.lower() != ".docx":
+        docx_sibling = src.with_suffix(".docx")
+        if not docx_sibling.exists():
+            raise FileNotFoundError(
+                f"ATS-ready .docx resume not found at {docx_sibling}.\n\n"
+                "Place a formatted .docx version alongside your .md resume, "
+                "or set Resume Path directly to the .docx file."
+            )
+        src = docx_sibling
     out = folder_path / f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
-    shutil.copy2(resume_path, str(out))
+    shutil.copy2(str(src), str(out))
     return out
 
 
@@ -605,7 +618,8 @@ def run_fit_analysis(
             if not resume_file.exists():
                 on_error(f"Resume not found:\n{resume_path}\n\nUpdate Settings → Resume Path.")
                 return
-            resume_text = extract_docx_text(resume_file)
+            resume_text = extract_docx_text(resume_file) if resume_file.suffix == ".docx" \
+                else resume_file.read_text(encoding="utf-8")
 
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
