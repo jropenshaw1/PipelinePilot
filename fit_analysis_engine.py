@@ -162,6 +162,16 @@ The JSON must have exactly this structure:
 # Text extraction
 # ─────────────────────────────────────────────
 
+def _read_text_file(path: Path) -> str:
+    """Read a text file, falling back to latin-1 if UTF-8 decoding fails.
+    Handles Windows-1252 characters common in LinkedIn/browser copy-paste.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="latin-1")
+
+
 def extract_docx_text(path: Path) -> str:
     doc = Document(str(path))
     parts = []
@@ -604,7 +614,7 @@ def run_fit_analysis(
             _p("Reading job description...")
             jd_file = find_jd_file(folder_path)
             jd_text = extract_docx_text(jd_file) if jd_file.suffix == ".docx" \
-                else jd_file.read_text(encoding="utf-8")
+                else _read_text_file(jd_file)
 
             if len(jd_text.strip()) < 100:
                 on_error(
@@ -619,7 +629,7 @@ def run_fit_analysis(
                 on_error(f"Resume not found:\n{resume_path}\n\nUpdate Settings → Resume Path.")
                 return
             resume_text = extract_docx_text(resume_file) if resume_file.suffix == ".docx" \
-                else resume_file.read_text(encoding="utf-8")
+                else _read_text_file(resume_file)
 
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
