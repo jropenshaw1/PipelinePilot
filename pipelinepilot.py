@@ -350,6 +350,21 @@ class PipelinePilotApp(ctk.CTk):
         )
         filter_menu.pack(side="left", padx=(0, 20))
 
+        # Sort dropdown
+        ctk.CTkLabel(filter_frame, text="Sort:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
+
+        self._sort_var = ctk.StringVar(value=database.DEFAULT_SORT)
+        sort_options = list(database.SORT_OPTIONS.keys())
+        sort_menu = ctk.CTkOptionMenu(
+            filter_frame,
+            values=sort_options,
+            variable=self._sort_var,
+            command=lambda _: self._refresh_list(outer),
+            width=160,
+            fg_color=C_CARD,
+        )
+        sort_menu.pack(side="left", padx=(0, 20))
+
         ctk.CTkLabel(filter_frame, text="Search:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
 
         self._search_var = ctk.StringVar()
@@ -372,12 +387,13 @@ class PipelinePilotApp(ctk.CTk):
         self._render_list_rows(opportunities)
 
     def _refresh_list(self, outer_frame=None):
-        """Re-render list rows based on status filter and search query."""
+        """Re-render list rows based on status filter, sort order, and search query."""
         status_filter = self._status_filter_var.get()
         if status_filter == "All":
             status_filter = None
+        sort_by = self._sort_var.get()
         opportunities = database.get_all_opportunities(
-            self.db_path, status_filter=status_filter
+            self.db_path, status_filter=status_filter, sort_by=sort_by
         )
         # Apply search filter client-side
         search = getattr(self, "_search_var", None)
@@ -902,8 +918,8 @@ class PipelinePilotApp(ctk.CTk):
         # Column headers
         header_row = ctk.CTkFrame(self._qfl_container, fg_color="transparent")
         header_row.pack(fill="x", pady=(0, 4))
-        col_widths = [220, 200, 100, 80, 80, 180]
-        col_labels = ["Company", "Role", "Fit", "Decision", "Level", "Location"]
+        col_widths = [200, 180, 80, 70, 70, 150, 100]
+        col_labels = ["Company", "Role", "Fit", "Decision", "Level", "Location", "Action"]
         for w, lbl in zip(col_widths, col_labels):
             ctk.CTkLabel(
                 header_row,
@@ -928,7 +944,7 @@ class PipelinePilotApp(ctk.CTk):
             text=entry.get("company_name", "?"),
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=C_TEXT,
-            width=220,
+            width=200,
             anchor="w",
         ).pack(side="left", padx=(12, 4), pady=10)
 
@@ -938,7 +954,7 @@ class PipelinePilotApp(ctk.CTk):
             text=entry.get("role_title", "?"),
             font=ctk.CTkFont(size=11),
             text_color=C_MUTED,
-            width=200,
+            width=180,
             anchor="w",
         ).pack(side="left", padx=4)
 
@@ -979,7 +995,7 @@ class PipelinePilotApp(ctk.CTk):
             text=entry.get("role_level", "?"),
             font=ctk.CTkFont(size=11),
             text_color=C_MUTED,
-            width=80,
+            width=70,
             anchor="w",
         ).pack(side="left", padx=4)
 
@@ -989,9 +1005,100 @@ class PipelinePilotApp(ctk.CTk):
             text=entry.get("location_remote_status", "?"),
             font=ctk.CTkFont(size=11),
             text_color=C_MUTED,
-            width=180,
+            width=150,
             anchor="w",
         ).pack(side="left", padx=4)
+
+        # Promote button or promoted label
+        if entry.get("promoted_to_pipeline") == 1:
+            ctk.CTkLabel(
+                row,
+                text="✓ Promoted",
+                font=ctk.CTkFont(size=10),
+                text_color=C_SUCCESS,
+                width=90,
+                anchor="w",
+            ).pack(side="left", padx=4)
+        else:
+            qfl_id = entry.get("id")
+            ctk.CTkButton(
+                row,
+                text="🚀 Promote",
+                command=lambda eid=qfl_id: self._promote_qfl_entry(eid),
+                fg_color=C_BLUE,
+                hover_color="#3a8ad9",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                width=90,
+                height=28,
+                corner_radius=6,
+            ).pack(side="left", padx=4)
+
+    # ── Quick-Fit Promotion ───────────────────
+
+    def _promote_qfl_entry(self, qfl_id: int):
+        """Promote a quick-fit entry to a full pipeline opportunity."""
+        if not self.db_path or not self.cfg.get("job_search_root"):
+            messagebox.showwarning(
+                "Not Configured",
+                "Set your job search root folder in Settings first.",
+            )
+            return
+
+        # Fetch the entry for confirmation dialog
+        entries = database.get_quick_fit_entries(self.db_path)
+        entry = None
+        for e in entries:
+            if e.get("id") == qfl_id:
+                entry = e
+                break
+
+        if not entry:
+            messagebox.showerror("Not Found", f"Quick-fit entry #{qfl_id} not found.")
+            return
+
+        company = entry.get("company_name", "Unknown")
+        role = entry.get("role_title", "?")
+        folder_preview = filesystem.generate_folder_name(company, role)
+        has_artifact = bool(entry.get("opportunity_artifact", "").strip())
+
+        # Confirmation dialog
+        artifact_note = (
+            "JD text will be pre-populated from the captured artifact."
+            if has_artifact
+            else "No JD artifact captured — a blank JD file will be created."
+        )
+
+        if not messagebox.askyesno(
+            "Promote to Pipeline",
+            f"Promote this quick-fit entry to the pipeline?\n\n"
+            f"Company: {company}\n"
+            f"Role: {role}\n"
+            f"Folder: {folder_preview}\n\n"
+            f"{artifact_note}\n\n"
+            f"This will create the opportunity folder and database record.",
+        ):
+            return
+
+        try:
+            result = database.promote_quick_fit(
+                self.db_path,
+                qfl_id,
+                self.cfg["job_search_root"],
+            )
+            messagebox.showinfo(
+                "Promoted",
+                f"✅ Promoted to pipeline.\n\n"
+                f"Folder: {result['folder_name']}\n\n"
+                f"The JD file is ready — you can run JFA from the "
+                f"Opportunities view.",
+            )
+            # Refresh the QFL view
+            self._show_quick_fit_log()
+
+        except ValueError as e:
+            messagebox.showwarning("Cannot Promote", str(e))
+        except Exception as e:
+            messagebox.showerror("Promotion Failed", f"An error occurred:\n\n{e}")
 
     # ── OpenBrain Import ──────────────────────
 
