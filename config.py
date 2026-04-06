@@ -10,6 +10,8 @@ from models import (
     DEFAULT_FIT_THRESHOLD,
     DEFAULT_FOLLOW_UP_OFFSET_DAYS,
     CLOUD_SYNC_INDICATORS,
+    OB_SUPABASE_URL_KEY,
+    OB_SUPABASE_KEY_KEY,
 )
 
 # Config file lives beside pipelinepilot.py
@@ -21,6 +23,8 @@ DEFAULTS = {
     "follow_up_offset_days": DEFAULT_FOLLOW_UP_OFFSET_DAYS,
     "resume_path": "",
     "anthropic_api_key": "",
+    OB_SUPABASE_URL_KEY: "",
+    OB_SUPABASE_KEY_KEY: "",
 }
 
 

@@ -13,6 +13,7 @@ import config
 import database
 import filesystem
 import fit_analysis_engine
+import ob_bridge
 from models import (
     APP_NAME,
     APP_VERSION,
@@ -22,6 +23,8 @@ from models import (
     LOCATION_TYPES,
     LAST_COMM_TYPES,
     RESTRICTION_OPTIONS,
+    OB_SUPABASE_URL_KEY,
+    OB_SUPABASE_KEY_KEY,
 )
 
 # ─────────────────────────────────────────────
@@ -120,6 +123,8 @@ class PipelinePilotApp(ctk.CTk):
         nav_items = [
             ("📊  Dashboard", self._show_dashboard),
             ("📋  Opportunities", self._show_list),
+            ("⚡  Quick-Fit Log", self._show_quick_fit_log),
+            ("📥  Import from OB", self._run_ob_import),
             ("⚙️  Settings", self._show_settings),
         ]
 
@@ -678,6 +683,42 @@ class PipelinePilotApp(ctk.CTk):
             show="•",
         ).pack(anchor="w")
 
+        # ── OpenBrain (Supabase) Configuration ──
+        self._settings_section(frame, "OpenBrain Configuration")
+
+        ob_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        ob_frame.pack(fill="x", pady=(0, 20))
+        ob_inner = ctk.CTkFrame(ob_frame, fg_color="transparent")
+        ob_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            ob_inner,
+            text="Connect to OpenBrain (Supabase) for quick-fit log import.\n"
+                 "Use the service_role JWT key (bypasses RLS).",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            ob_inner, text="Supabase URL", text_color=C_TEXT, font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._ob_url_var = ctk.StringVar(value=self.cfg.get(OB_SUPABASE_URL_KEY, ""))
+        ctk.CTkEntry(
+            ob_inner, textvariable=self._ob_url_var, width=540,
+            font=ctk.CTkFont(size=11), placeholder_text="https://xxxxx.supabase.co",
+        ).pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            ob_inner, text="Service Role Key", text_color=C_TEXT, font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._ob_key_var = ctk.StringVar(value=self.cfg.get(OB_SUPABASE_KEY_KEY, ""))
+        ctk.CTkEntry(
+            ob_inner, textvariable=self._ob_key_var, width=540,
+            font=ctk.CTkFont(size=11, family="Courier"), show="•",
+            placeholder_text="eyJhbGciOiJI...",
+        ).pack(anchor="w")
+
         # ── Rebuild Index ──
         self._settings_section(frame, "Database")
 
@@ -771,6 +812,283 @@ class PipelinePilotApp(ctk.CTk):
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=C_MUTED,
         ).pack(anchor="w", pady=(12, 4))
+
+    # ── Quick-Fit Log View ──────────────────────
+
+    def _show_quick_fit_log(self):
+        """Display quick-fit-log entries in a scrollable table."""
+        self._clear_content()
+
+        if not self.db_path:
+            self._show_first_launch()
+            return
+
+        outer = ctk.CTkFrame(self.content, fg_color="transparent")
+        outer.pack(fill="both", expand=True, padx=24, pady=24)
+        outer.columnconfigure(0, weight=1)
+
+        # Metrics bar
+        metrics = database.get_quick_fit_metrics(self.db_path)
+        metrics_frame = ctk.CTkFrame(outer, fg_color="transparent")
+        metrics_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+
+        ctk.CTkLabel(
+            metrics_frame,
+            text=f"⚡ Quick-Fit Log  ({metrics['total']})",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(side="left")
+
+        # Decision summary pills
+        pill_frame = ctk.CTkFrame(metrics_frame, fg_color="transparent")
+        pill_frame.pack(side="right")
+        pill_colors = {"pursue": C_SUCCESS, "pass": C_ACCENT, "parked": C_WARNING}
+        for dec, cnt in metrics.get("by_decision", {}).items():
+            ctk.CTkLabel(
+                pill_frame,
+                text=f" {dec}: {cnt} ",
+                font=ctk.CTkFont(size=11),
+                fg_color=pill_colors.get(dec, C_PANEL),
+                corner_radius=6,
+                text_color="white",
+            ).pack(side="left", padx=3)
+
+        # Filter bar
+        filter_frame = ctk.CTkFrame(outer, fg_color="transparent")
+        filter_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+
+        ctk.CTkLabel(filter_frame, text="Decision:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
+        self._qfl_filter_var = ctk.StringVar(value="All")
+        ctk.CTkOptionMenu(
+            filter_frame,
+            values=["All", "pursue", "pass", "parked"],
+            variable=self._qfl_filter_var,
+            command=lambda _: self._refresh_qfl(outer),
+            width=120,
+            fg_color=C_CARD,
+        ).pack(side="left")
+
+        # List container
+        list_container = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        list_container.grid(row=2, column=0, sticky="nsew")
+        outer.rowconfigure(2, weight=1)
+        list_container.columnconfigure(0, weight=1)
+        self._qfl_container = list_container
+
+        entries = database.get_quick_fit_entries(self.db_path)
+        self._render_qfl_rows(entries)
+
+    def _refresh_qfl(self, outer_frame=None):
+        """Re-render quick-fit-log rows based on filter."""
+        decision_filter = self._qfl_filter_var.get()
+        d = decision_filter if decision_filter != "All" else None
+        entries = database.get_quick_fit_entries(self.db_path, decision_filter=d)
+        for w in self._qfl_container.winfo_children():
+            w.destroy()
+        self._render_qfl_rows(entries)
+
+    def _render_qfl_rows(self, entries: list):
+        """Render quick-fit-log entries into the list container."""
+        if not entries:
+            ctk.CTkLabel(
+                self._qfl_container,
+                text="No quick-fit entries yet.\nUse 'quick fit' in Claude, then Import from OB.",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=13),
+                justify="center",
+            ).pack(pady=40)
+            return
+
+        # Column headers
+        header_row = ctk.CTkFrame(self._qfl_container, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, 4))
+        col_widths = [220, 200, 100, 80, 80, 180]
+        col_labels = ["Company", "Role", "Fit", "Decision", "Level", "Location"]
+        for w, lbl in zip(col_widths, col_labels):
+            ctk.CTkLabel(
+                header_row,
+                text=lbl,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=C_MUTED,
+                width=w,
+                anchor="w",
+            ).pack(side="left", padx=4)
+
+        for entry in entries:
+            self._qfl_row(entry)
+
+    def _qfl_row(self, entry: dict):
+        """Render a single quick-fit-log row."""
+        row = ctk.CTkFrame(self._qfl_container, fg_color=C_CARD, corner_radius=8)
+        row.pack(fill="x", pady=3)
+
+        # Company
+        ctk.CTkLabel(
+            row,
+            text=entry.get("company_name", "?"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C_TEXT,
+            width=220,
+            anchor="w",
+        ).pack(side="left", padx=(12, 4), pady=10)
+
+        # Role
+        ctk.CTkLabel(
+            row,
+            text=entry.get("role_title", "?"),
+            font=ctk.CTkFont(size=11),
+            text_color=C_MUTED,
+            width=200,
+            anchor="w",
+        ).pack(side="left", padx=4)
+
+        # Fit score badge
+        fit = entry.get("quick_fit", "?")
+        fit_colors = {
+            "strong": C_SUCCESS,
+            "moderate": C_WARNING,
+            "weak": "#e67e22",
+            "no-fit": C_ACCENT,
+        }
+        ctk.CTkLabel(
+            row,
+            text=f" {fit} ",
+            font=ctk.CTkFont(size=11),
+            fg_color=fit_colors.get(fit, C_PANEL),
+            corner_radius=6,
+            text_color="white",
+            width=80,
+        ).pack(side="left", padx=4)
+
+        # Decision badge
+        dec = entry.get("decision", "?")
+        dec_colors = {"pursue": C_SUCCESS, "pass": C_ACCENT, "parked": C_WARNING}
+        ctk.CTkLabel(
+            row,
+            text=f" {dec} ",
+            font=ctk.CTkFont(size=11),
+            fg_color=dec_colors.get(dec, C_PANEL),
+            corner_radius=6,
+            text_color="white",
+            width=70,
+        ).pack(side="left", padx=4)
+
+        # Level
+        ctk.CTkLabel(
+            row,
+            text=entry.get("role_level", "?"),
+            font=ctk.CTkFont(size=11),
+            text_color=C_MUTED,
+            width=80,
+            anchor="w",
+        ).pack(side="left", padx=4)
+
+        # Location
+        ctk.CTkLabel(
+            row,
+            text=entry.get("location_remote_status", "?"),
+            font=ctk.CTkFont(size=11),
+            text_color=C_MUTED,
+            width=180,
+            anchor="w",
+        ).pack(side="left", padx=4)
+
+    # ── OpenBrain Import ──────────────────────
+
+    def _run_ob_import(self):
+        """Fetch [quick-fit-log] entries from OpenBrain and import into SQLite."""
+        if not self.db_path:
+            messagebox.showwarning(
+                "Not Configured",
+                "Set your job search root folder in Settings first.",
+            )
+            return
+
+        ob_url = self.cfg.get(OB_SUPABASE_URL_KEY, "").strip()
+        ob_key = self.cfg.get(OB_SUPABASE_KEY_KEY, "").strip()
+
+        if not ob_url or not ob_key:
+            messagebox.showwarning(
+                "OB Not Configured",
+                "Add your OpenBrain Supabase URL and key in Settings.\n\n"
+                "URL: https://blreixaevpbmhbhyqgbq.supabase.co\n"
+                "Key: your service_role JWT",
+            )
+            return
+
+        # Show progress
+        self._clear_content()
+        frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        frame.place(relx=0.5, rely=0.5, anchor="center")
+
+        status_label = ctk.CTkLabel(
+            frame,
+            text="📡 Fetching from OpenBrain...",
+            font=ctk.CTkFont(size=16),
+            text_color=C_BLUE,
+        )
+        status_label.pack(pady=20)
+        self.update()
+
+        # Run import
+        result = ob_bridge.run_import(self.db_path, ob_url, ob_key)
+
+        # Clear progress and show results
+        status_label.destroy()
+
+        # Build result message
+        lines = [
+            f"Fetched:  {result['fetched']} thoughts from OB",
+            f"Parsed:   {result['parsed']} valid [quick-fit-log] entries",
+            f"Imported: {result['imported']} new records",
+            f"Skipped:  {result['skipped']} (already imported)",
+        ]
+
+        if result["parse_failures"]:
+            lines.append(f"Parse failures: {len(result['parse_failures'])}")
+
+        if result["errors"]:
+            lines.append(f"Errors: {len(result['errors'])}")
+            for err in result["errors"][:5]:
+                lines.append(f"  • {err}")
+
+        # Determine icon and color
+        if result["imported"] > 0:
+            icon = "✅"
+            color = C_SUCCESS
+        elif result["fetched"] == 0:
+            icon = "⚠️"
+            color = C_WARNING
+        else:
+            icon = "📋"
+            color = C_BLUE
+
+        ctk.CTkLabel(
+            frame,
+            text=f"{icon} OB Import Complete",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=color,
+        ).pack(pady=(0, 12))
+
+        ctk.CTkLabel(
+            frame,
+            text="\n".join(lines),
+            font=ctk.CTkFont(size=13, family="Consolas"),
+            text_color=C_TEXT,
+            justify="left",
+        ).pack(pady=(0, 20))
+
+        # Back to dashboard button
+        ctk.CTkButton(
+            frame,
+            text="← Back to Dashboard",
+            command=self._show_dashboard,
+            fg_color=C_PANEL,
+            hover_color=C_BLUE,
+            font=ctk.CTkFont(size=13),
+            height=36,
+            corner_radius=8,
+        ).pack()
 
     # ── Capture Dialog ─────────────────────────
 
@@ -973,6 +1291,8 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["resume_path"] = self._resume_path_var.get().strip()
         self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
         self.cfg["anthropic_api_key"] = self._api_key_var.get().strip()
+        self.cfg[OB_SUPABASE_URL_KEY] = self._ob_url_var.get().strip()
+        self.cfg[OB_SUPABASE_KEY_KEY] = self._ob_key_var.get().strip()
         config.save_config(self.cfg)
         messagebox.showinfo("Saved", "Settings saved successfully.")
 

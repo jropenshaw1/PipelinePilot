@@ -139,6 +139,12 @@ launch_local.bat
 pipelinepilot.config
 commit_*.sh
 
+# PipelinePilot database — never commit pipeline data
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
 # Environments
 .env
 .envrc

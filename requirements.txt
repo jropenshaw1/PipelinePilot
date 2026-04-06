@@ -14,6 +14,9 @@ PyYAML>=6.0.1
 # Claude API — fit analysis engine
 anthropic>=0.40.0
 
+# OpenBrain bridge — Supabase REST API
+requests>=2.31.0
+
 # Standard library (no install needed on Windows — listed for documentation)
 # copy
 # datetime
