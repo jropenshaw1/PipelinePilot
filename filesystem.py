@@ -80,7 +80,7 @@ def create_opportunity_folder(job_search_root: str, folder_name: str) -> Path:
     if not folder_path.exists():
         raise OSError(f"Folder creation failed: {folder_path}")
 
-    jd_filename = f"JD_{folder_name}.docx"
+    jd_filename = f"JD_{folder_name}.txt"
     jd_path = folder_path / jd_filename
     _create_blank_jd(jd_path, folder_name)
 
@@ -89,30 +89,22 @@ def create_opportunity_folder(job_search_root: str, folder_name: str) -> Path:
 
 def _create_blank_jd(jd_path: Path, folder_name: str) -> None:
     """
-    Create a blank job description Word document.
-    Data Dictionary §3: JD_Company_Role.docx — required artifact.
+    Create a blank job description text file.
+    Data Dictionary §3: JD_Company_Role.txt — required artifact.
+    Plain text for direct LinkedIn/ATS copy-paste and fit_analysis_engine compatibility.
     """
     display_name = folder_name.replace("_", " ")
-
-    if DOCX_AVAILABLE:
-        doc = Document()
-        doc.add_heading(display_name, level=1)
-        doc.add_paragraph("Job URL: ")
-        doc.add_paragraph("Source: ")
-        doc.add_paragraph("Date Discovered: ")
-        doc.add_paragraph("Contact Name: ")
-        doc.add_paragraph("Contact Email: ")
-        doc.add_paragraph("")
-        doc.add_heading("Job Description", level=2)
-        doc.add_paragraph("[Paste full job description here]")
-        doc.add_paragraph("")
-        doc.add_heading("Notes", level=2)
-        doc.add_paragraph("[Add any initial notes here]")
-        doc.save(str(jd_path))
-    else:
-        jd_path.write_text(
-            f"Job Description — {display_name}\n\n"
-            "Job URL: \nSource: \nDate Discovered: \n\n"
-            "[Paste full job description here]\n",
-            encoding="utf-8",
-        )
+    jd_path.write_text(
+        f"Job Description — {display_name}\n"
+        f"{'=' * len('Job Description — ' + display_name)}\n\n"
+        "Job URL: \n"
+        "Source: \n"
+        "Date Discovered: \n"
+        "Contact Name: \n"
+        "Contact Email: \n\n"
+        "--- Job Description ---\n\n"
+        "[Paste full job description here]\n\n"
+        "--- Notes ---\n\n"
+        "[Add any initial notes here]\n",
+        encoding="utf-8",
+    )

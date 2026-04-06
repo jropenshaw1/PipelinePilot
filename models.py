@@ -71,3 +71,7 @@ APP_NAME = "PipelinePilot"
 APP_VERSION = "0.1.0"
 CONFIG_FILENAME = "pipelinepilot.config"
 DB_FILENAME = "pipelinepilot.db"
+
+# OpenBrain (Supabase) config keys
+OB_SUPABASE_URL_KEY = "ob_supabase_url"
+OB_SUPABASE_KEY_KEY = "ob_supabase_key"

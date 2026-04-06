@@ -102,7 +102,25 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def initialize_database(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.execute(SCHEMA)
+        migrate_add_interviews_table(conn)
+        migrate_add_quick_fit_log(conn)
         conn.commit()
+
+
+def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: create quick_fit_log table + ob_thought_id column."""
+    migration_001 = Path(__file__).parent / "migrations" / "001_create_quick_fit_log.sql"
+    if migration_001.exists():
+        conn.executescript(migration_001.read_text())
+    # Migration 002: add ob_thought_id (idempotent — check before ALTER)
+    try:
+        conn.execute("SELECT ob_thought_id FROM quick_fit_log LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE quick_fit_log ADD COLUMN ob_thought_id TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_qfl_ob_thought_id "
+            "ON quick_fit_log(ob_thought_id)"
+        )
 
 
 def create_opportunity(db_path: Path, record: dict) -> None:
@@ -333,3 +351,55 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
             report["failures"].append(f"Failed to index '{folder_name}': {e}")
 
     return report
+
+
+# ── Quick-Fit Log Queries ──────────────────────────────────
+
+def get_quick_fit_entries(
+    db_path: Path,
+    decision_filter: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Fetch quick-fit-log entries, optionally filtered by decision."""
+    conditions = []
+    params = []
+    if decision_filter and decision_filter != "All":
+        conditions.append("decision = ?")
+        params.append(decision_filter)
+
+    sql = "SELECT * FROM quick_fit_log"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY timestamp DESC"
+    sql += f" LIMIT {limit}"
+
+    with _connect(db_path) as conn:
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.OperationalError:
+            return []
+
+
+def get_quick_fit_metrics(db_path: Path) -> dict:
+    """Compute quick-fit-log summary metrics."""
+    with _connect(db_path) as conn:
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM quick_fit_log").fetchone()[0]
+            by_decision = {}
+            rows = conn.execute(
+                "SELECT decision, COUNT(*) as cnt FROM quick_fit_log GROUP BY decision"
+            ).fetchall()
+            for row in rows:
+                by_decision[row["decision"]] = row["cnt"]
+
+            by_fit = {}
+            rows = conn.execute(
+                "SELECT quick_fit, COUNT(*) as cnt FROM quick_fit_log GROUP BY quick_fit"
+            ).fetchall()
+            for row in rows:
+                by_fit[row["quick_fit"]] = row["cnt"]
+
+            return {"total": total, "by_decision": by_decision, "by_fit": by_fit}
+        except sqlite3.OperationalError:
+            return {"total": 0, "by_decision": {}, "by_fit": {}}
