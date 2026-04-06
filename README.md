@@ -70,7 +70,7 @@ PipelinePilot is built on a small set of engineering principles:
 
 **Mantra:** Disciplined simplicity.
 
-**Stack:** Python · CustomTkinter · SQLite · python-docx · pathlib
+**Stack:** Python · CustomTkinter · SQLite · python-docx · pathlib · requests
 
 Filesystem-first ensures the system remains durable, inspectable, and recoverable even if the database layer fails.
 
@@ -81,6 +81,7 @@ Filesystem-first ensures the system remains durable, inspectable, and recoverabl
 - **AI artifacts are documents.** Every Job Fit Analyst output is a durable filesystem artifact — inspectable, indexable, auditable. Not a transient API response.
 - **Reference and index, never reinterpret.** PipelinePilot indexes fit analysis output. It never generates a competing AI reasoning artifact.
 - **Idempotent recovery.** `pipelinepilot rebuild-index` reconstructs the entire SQLite database from the filesystem. Run it once or ten times — same result.
+- **AI as capture interface.** Quick-fit triage happens conversationally through AI agents, with structured entries written to OpenBrain and imported into PipelinePilot. No manual form entry required.
 
 Seven Architecture Decision Records document every significant choice, including what was rejected and why. See `/docs/06_architecture_decision_records.md`.
 
@@ -96,7 +97,7 @@ Non-goals include:
 
 - **No job board scraping.** PipelinePilot assumes discovery happens elsewhere. It manages opportunities after discovery.
 - **No AI reasoning inside PipelinePilot.** AI analysis is owned by the Job Fit Analyst system. PipelinePilot indexes outputs but never generates competing analysis.
-- **No cloud service dependency.** The system runs entirely locally. Cloud storage is used only for file synchronization.
+- **No cloud service dependency.** The system runs entirely locally. Cloud storage is used only for file synchronization. OpenBrain integration is optional and one-directional (import only).
 - **No complex workflow engine.** The lifecycle stages are intentionally simple and human-driven.
 
 These constraints keep the system understandable, recoverable, and durable.
@@ -106,12 +107,29 @@ These constraints keep the system understandable, recoverable, and durable.
 ## System Capabilities
 
 - **Opportunity capture** — creates `Company_Role` folder and blank job description document in one action
+- **Quick-fit triage** — AI-powered rapid JD assessment across six dimensions (level, domain, location, degree/cert, culture, comp) with structured logging via OpenBrain
+- **OpenBrain import** — one-click import of quick-fit-log entries from Supabase-backed AI memory into SQLite, with idempotent dedup
+- **Quick-fit log viewer** — color-coded table of triage decisions with decision filtering and summary metrics
 - **Fit analysis integration** — parses YAML front-matter from `fit_analysis.md` to index score, recommendation, strengths, and gaps without duplicating reasoning
 - **Full lifecycle tracking** — Discovery → Capture → Fit Analysis → Application → Tracking → Close
 - **Employer communication log** — running dated log per role; confirmation email paste capture
 - **Action items and interview management** — per-role task list, interview date, pre/post notes
 - **Opportunity scoring dashboard** — pipeline metrics by stage, average fit score, follow-ups due
 - **Rebuild index** — deterministic, idempotent recovery from filesystem state
+
+---
+
+## Quick-Fit Log & OpenBrain Integration
+
+PipelinePilot includes a lightweight triage layer for rapid JD evaluation. The workflow:
+
+1. **Triage in conversation** — tell your AI agent "quick fit" with a pasted JD. The agent assesses fit across six dimensions and writes a structured `[quick-fit-log]` entry to OpenBrain.
+2. **Import into PipelinePilot** — click "📥 Import from OB" in the sidebar. PipelinePilot fetches entries from Supabase, parses the structured blocks, deduplicates by thought ID, and inserts into the `quick_fit_log` SQLite table.
+3. **Review in the Quick-Fit Log** — the "⚡ Quick-Fit Log" view shows all triage decisions with color-coded fit scores and decision badges, filterable by decision type.
+
+This creates a complete triage-to-pipeline funnel: AI handles the capture, PipelinePilot handles the management. Roles scored as "pursue" can be promoted to the full pipeline for detailed fit analysis, resume optimization, and application tracking.
+
+OpenBrain integration is optional. PipelinePilot functions fully without it — the quick-fit log table can also be populated through the existing Streamlit capture form (`quick_fit_capture.py`).
 
 ---
 
@@ -145,6 +163,15 @@ Configure your job search root folder on first launch. PipelinePilot creates a `
 
 > **Important:** PipelinePilot's filesystem-first architecture means your job search folder *is* your data. A local-only folder is not sufficient — your root folder must be inside a cloud-synced directory such as OneDrive, Google Drive, Dropbox, or equivalent. If the files are lost, no database backup can recover them. This is the one infrastructure requirement the tool cannot enforce for you.
 
+### OpenBrain Integration (Optional)
+
+To enable quick-fit log import from OpenBrain:
+
+1. In PipelinePilot Settings, enter your Supabase URL and service role key
+2. Use the "📥 Import from OB" button to pull quick-fit entries
+
+Requires a [Supabase](https://supabase.com) project with the OpenBrain schema. See the OpenBrain MCP server documentation for setup details.
+
 ---
 
 ## On Building with AI in 2026
@@ -161,7 +188,7 @@ My role is to create the conditions where great engineering happens: clear direc
 
 ## Status
 
-🟡 **Pre-implementation** — documentation set complete, implementation in progress.
+🟢 **v0.2.0** — Desktop application operational. Quick-fit triage pipeline live. OpenBrain import functional.
 
 ---
 

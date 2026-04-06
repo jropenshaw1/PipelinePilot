@@ -10,7 +10,7 @@ It is a personal tool — single user, no multi-tenancy, no auth layer.
 The filesystem is the source of truth. SQLite is a derived, rebuildable index.
 
 **Stack:** Python 3.x, SQLite, filesystem-first architecture
-**Primary files:** `pipelinepilot.py`, `database.py`, `models.py`, `config.py`, `fit_analysis_engine.py`
+**Primary files:** `pipelinepilot.py`, `database.py`, `models.py`, `config.py`, `fit_analysis_engine.py`, `ob_bridge.py`
 **Database:** `pipelinepilot.db` (SQLite, single file, rebuildable via `rebuild_index`)
 
 ## Behavioral Standards (TSH-9 / LENS)
@@ -68,8 +68,12 @@ These govern how you interact, not just what you build.
 
 ## Key Reference Files
 
-- `database.py` — schema definitions and all database operations
-- `models.py` — constants: STATUS_VALUES, SOURCE_VALUES, LOCATION_TYPES, LAST_COMM_TYPES
+- `database.py` — schema definitions and all database operations (opportunities, interviews, quick_fit_log)
+- `models.py` — constants: STATUS_VALUES, SOURCE_VALUES, LOCATION_TYPES, LAST_COMM_TYPES, OB config keys
+- `ob_bridge.py` — OpenBrain Supabase fetch, `[quick-fit-log]` block parser, SQLite import with dedup
 - `fit_analysis_engine.py` — AI fit scoring logic, do not modify without explicit instruction
+- `quick_fit_capture.py` — Streamlit-based manual capture form (standalone, not part of desktop app)
+- `migrations/` — SQL migration files (001: quick_fit_log table, 002: ob_thought_id column)
+- `queries/quick_fit_queries.sql` — 14 pre-built analytical queries for quick-fit data
 - `docs/` — ADRs and design decisions; read relevant ADRs before proposing structural changes
 - `C:\Users\jonat\OneDrive\Documents_PC\GIT_Repo_Private\ob1-extensions\extensions\job-hunt\schema.sql` — reference schema for interviews table (Nate B. Jones OB1)

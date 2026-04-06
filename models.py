@@ -68,7 +68,7 @@ DEFAULT_FOLLOW_UP_OFFSET_DAYS = 14
 
 # Application metadata
 APP_NAME = "PipelinePilot"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 CONFIG_FILENAME = "pipelinepilot.config"
 DB_FILENAME = "pipelinepilot.db"
 
