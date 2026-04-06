@@ -121,6 +121,13 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_qfl_ob_thought_id "
             "ON quick_fit_log(ob_thought_id)"
         )
+    # Migration 003: add promoted_folder_name (idempotent — check before ALTER)
+    try:
+        conn.execute("SELECT promoted_folder_name FROM quick_fit_log LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute(
+            "ALTER TABLE quick_fit_log ADD COLUMN promoted_folder_name TEXT"
+        )
 
 
 def create_opportunity(db_path: Path, record: dict) -> None:
@@ -143,12 +150,21 @@ def create_opportunity(db_path: Path, record: dict) -> None:
         conn.commit()
 
 
+SORT_OPTIONS = {
+    "Newest First": "date_created DESC",
+    "Company Name": "company_name COLLATE NOCASE ASC",
+}
+
+DEFAULT_SORT = "Newest First"
+
+
 def get_all_opportunities(
     db_path: Path,
     include_archived: bool = False,
     status_filter: str | None = None,
+    sort_by: str | None = None,
 ) -> list[dict]:
-    """FR-07: Return all opportunity records, optionally filtered."""
+    """FR-07: Return all opportunity records, optionally filtered and sorted."""
     conditions = []
     params = []
     if not include_archived:
@@ -159,7 +175,8 @@ def get_all_opportunities(
     sql = "SELECT * FROM opportunities"
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
-    sql += " ORDER BY date_created DESC"
+    order_clause = SORT_OPTIONS.get(sort_by, SORT_OPTIONS[DEFAULT_SORT])
+    sql += f" ORDER BY {order_clause}"
     with _connect(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
@@ -403,3 +420,130 @@ def get_quick_fit_metrics(db_path: Path) -> dict:
             return {"total": total, "by_decision": by_decision, "by_fit": by_fit}
         except sqlite3.OperationalError:
             return {"total": 0, "by_decision": {}, "by_fit": {}}
+
+
+# ── Quick-Fit → Pipeline Promotion ────────────────────────
+
+# Maps QFL source_channel values to opportunity SOURCE_VALUES
+SOURCE_CHANNEL_TO_SOURCE = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "ladders": "Ladders",
+    "recruiter-outreach": "Recruiter",
+    "referral": "Other",
+    "go-fractional": "Other",
+    "nates-network": "Other",
+    "jobright": "Other",
+    "other": "Other",
+}
+
+
+def _parse_location(location_remote_status: str) -> tuple:
+    """Parse QFL location string into (location_type, location_city).
+
+    Examples:
+        "remote"                   → ("Remote", None)
+        "remote | United States"   → ("Remote", "United States")
+        "hybrid | Phoenix, AZ"     → ("Hybrid", "Phoenix, AZ")
+        "onsite | Boston, MA"      → ("Onsite", "Boston, MA")
+    """
+    if not location_remote_status:
+        return ("Remote", None)
+
+    parts = [p.strip() for p in location_remote_status.split("|", 1)]
+    loc_type_raw = parts[0].lower()
+
+    if "remote" in loc_type_raw:
+        loc_type = "Remote"
+    elif "hybrid" in loc_type_raw:
+        loc_type = "Hybrid"
+    elif "onsite" in loc_type_raw or "on-site" in loc_type_raw:
+        loc_type = "Onsite"
+    else:
+        loc_type = "Remote"
+
+    loc_city = parts[1].strip() if len(parts) > 1 else None
+    return (loc_type, loc_city)
+
+
+def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
+    """
+    Promote a quick-fit-log entry to a full pipeline opportunity.
+
+    Creates: folder + JD file (pre-populated) + opportunity DB record.
+    Updates: QFL promoted_to_pipeline=1, promoted_folder_name=folder.
+    Returns: dict with folder_name and status.
+    Raises: ValueError on validation failure.
+    """
+    import filesystem
+
+    # Fetch the QFL entry
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM quick_fit_log WHERE id = ?", (qfl_id,)
+        ).fetchone()
+
+    if not row:
+        raise ValueError(f"Quick-fit entry #{qfl_id} not found")
+
+    entry = dict(row)
+
+    # Guard: already promoted
+    if entry.get("promoted_to_pipeline") == 1:
+        existing = entry.get("promoted_folder_name", "?")
+        raise ValueError(
+            f"Entry #{qfl_id} already promoted to '{existing}'"
+        )
+
+    # Generate folder name
+    company = entry.get("company_name", "Unknown")
+    role = entry.get("role_title", "UnknownRole")
+    folder_name = filesystem.generate_folder_name(company, role)
+
+    # Guard: duplicate folder
+    if filesystem.folder_exists(job_search_root, folder_name):
+        raise ValueError(
+            f"Folder '{folder_name}' already exists. "
+            "Use the existing opportunity or rename."
+        )
+
+    # Parse location
+    loc_type, loc_city = _parse_location(
+        entry.get("location_remote_status", "")
+    )
+
+    # Map source channel
+    source = SOURCE_CHANNEL_TO_SOURCE.get(
+        entry.get("source_channel", "other"), "Other"
+    )
+
+    # Create folder with pre-populated JD
+    artifact_text = entry.get("opportunity_artifact") or ""
+    filesystem.create_opportunity_folder_with_jd(
+        job_search_root, folder_name, company, role, artifact_text
+    )
+
+    # Build and insert opportunity record
+    record = {
+        "folder_name": folder_name,
+        "company_name": company,
+        "role_title": role,
+        "source": source,
+        "location_type": loc_type,
+        "location_city": loc_city,
+        "decision_notes": entry.get("notes") or "",
+        "status": "Capturing",
+    }
+    create_opportunity(db_path, record)
+
+    # Mark QFL entry as promoted
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE quick_fit_log "
+            "SET promoted_to_pipeline = 1, promoted_folder_name = ? "
+            "WHERE id = ?",
+            (folder_name, qfl_id),
+        )
+        conn.commit()
+
+    return {"folder_name": folder_name, "status": "promoted"}
