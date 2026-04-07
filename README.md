@@ -131,6 +131,37 @@ This creates a complete triage-to-pipeline funnel: AI handles the capture, Pipel
 
 OpenBrain integration is optional. PipelinePilot functions fully without it — the quick-fit log table can also be populated through the existing Streamlit capture form (`quick_fit_capture.py`).
 
+### Setting Up the Quick-Fit Skill
+
+The quick-fit triage is powered by a Claude skill that runs conversationally. No UI, no form, no context switching. You paste a JD, get a verdict, and the structured entry lands in OpenBrain ready for PipelinePilot import.
+
+**Installation:**
+
+1. Copy the `quick-fit` folder into your Claude skills directory (typically `~/.claude/skills/` or your MCP skills path).
+2. The skill file (`SKILL.md`) contains the trigger logic, the six-dimension assessment rubric, the structured output schema, and the OpenBrain write instructions.
+3. Ensure your Claude environment has access to the OpenBrain MCP server for `capture_thought` writes.
+
+**Trigger phrases:** "quick fit", "fit check", "qf this", "quick take on this", "quick read on this", "is this worth pursuing", or "run a quick fit."
+
+**What happens:** When triggered, the skill parses the JD, assesses fit across six dimensions (level alignment, domain match, location/remote, degree/cert requirements, culture/industry signals, and compensation signals), renders a brief conversational verdict, writes a schema-compliant `[quick-fit-log]` entry to OpenBrain, and confirms the write with a thought ID.
+
+**Assessment output:**
+
+- **Fit scores:** strong, moderate, weak, or no-fit
+- **Decisions:** pursue, pass, or parked
+- **Pass reasons:** Structured enum vocabulary (wrong-level, degree-required, location-mismatch, etc.) for downstream filtering
+
+The schema is the contract between the quick-fit skill and PipelinePilot's import parser. The skill enforces the format. PipelinePilot trusts it.
+
+### Relationship Between Quick-Fit and Job Fit Analyst
+
+Quick-fit is the 30-second upstream screen. Job Fit Analyst is the full deep dive. They are complementary, not competing:
+
+- **Quick-fit** answers: "Is this worth my time?" Runs in seconds. One OB write. Done.
+- **Job Fit Analyst** answers: "How exactly do I position myself for this role?" Runs six agents. Produces cover letter, optimized resume, and interview guide.
+
+A typical workflow: quick-fit 10 roles in a morning scan, pursue 2-3, run Job Fit Analyst on the ones worth the full treatment.
+
 ---
 
 ## Job Fit Analyst Integration
@@ -145,6 +176,44 @@ PipelinePilot integrates with the [Job Fit Analyst](https://github.com/jropensha
 PipelinePilot parses `fit_analysis.md` to index the score, recommendation, strengths, and gaps. The resume and cover letter are stored in the folder and used directly by the user.
 
 The two systems are cleanly separated. **Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.**
+
+---
+
+## Personalizing Output with a Companion Context Skill
+
+The Job Fit Analyst produces strong results with just a resume and a job description. But the cover letters, optimized resumes, and interview guides it generates are inherently generic. They sound like a competent AI wrote them, not like you wrote them.
+
+A companion context skill solves this. It is a private skill file you create that carries your personal voice, career narrative, signature proof points, and standing framing decisions. When loaded alongside the Job Fit Analyst, it enriches Agents 4 (Cover Letter), 5 (Resume), and 6 (Interview Guide) with context that makes the output authentically yours.
+
+### What Goes in a Companion Context Skill
+
+A companion skill is a single `SKILL.md` file that you write and maintain. It typically includes:
+
+- **Identity and positioning:** Your career thesis in one sentence. What kind of leader you are. What roles you target.
+- **Voice and tone rules:** How your writing should sound. Phrases to use, phrases to ban. Register and formality level.
+- **Signature war stories:** Your 4-7 most powerful career proof points, each with specific numbers and a note on when to deploy them.
+- **Standing framing decisions:** Rules that apply to every application. How to handle degree equivalency, year counts, scope accuracy, contact information, formatting preferences.
+- **Current search posture:** Active applications, target geography, certifications, excluded companies.
+- **Agent-specific instructions:** Guidance for each downstream agent on how to use the context. What the cover letter should feel like. What the resume optimizer should preserve. What the interview guide should pull for STAR outlines.
+
+### Setting Up Your Companion Skill
+
+1. Create a folder in your Claude skills directory named after yourself (e.g., `your-name-context/`).
+2. Write a `SKILL.md` file following the structure above. Start with the sections that matter most to you and expand over time.
+3. In the skill's YAML front matter, set trigger phrases that link it to the Job Fit Analyst workflow (e.g., "write my cover letter", "optimize my resume", "interview guide", "personalize this").
+4. The skill loads automatically when triggered alongside the Job Fit Analyst. No code changes required.
+
+### How It Works at Runtime
+
+When you trigger the Job Fit Analyst (e.g., "help me apply for this role"), the companion context skill is available to Agents 4, 5, and 6. They draw from it the same way a ghostwriter would draw from interview notes with their client: the structure and analysis come from the Job Fit Analyst, the voice and specificity come from your companion skill.
+
+The companion skill does not modify the Job Fit Analyst's workflow or analysis logic. The Source Integrity Layer still governs all output. Your war stories are only used where they genuinely map to the JD's requirements. The Advocate/Auditor framework is unchanged. What changes is that the output reads like you wrote it on a good day, not like an AI templated it.
+
+### Why This Matters
+
+Hiring managers and recruiters can spot AI-generated application materials. The tells are consistent: generic enthusiasm, vague transferable-skill language, no personality. A companion context skill is the difference between an application that reads like everyone else's and one that carries your actual voice, your actual numbers, and your actual story.
+
+The Job Fit Analyst is public and free. Your companion skill is private and personal. Together, they produce output that is honest, grounded, and sounds like the person who actually lived the career.
 
 ---
 
