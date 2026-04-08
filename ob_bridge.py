@@ -232,10 +232,11 @@ def fetch_qfl_thoughts(
 
         all_thoughts = resp.json()
 
-        # Client-side filter: only thoughts containing [quick-fit-log] block
+        # Client-side filter: only thoughts containing both opening and closing tags
         qfl_thoughts = [
             t for t in all_thoughts
             if "[quick-fit-log]" in (t.get("content") or "")
+            and "[/quick-fit-log]" in (t.get("content") or "")
         ]
         logger.info(
             f"Fetched {len(all_thoughts)} thoughts, "
