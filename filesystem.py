@@ -87,6 +87,41 @@ def create_opportunity_folder(job_search_root: str, folder_name: str) -> Path:
     return folder_path
 
 
+def create_opportunity_folder_with_jd(
+    job_search_root: str,
+    folder_name: str,
+    company_name: str,
+    role_title: str,
+    artifact_text: str,
+) -> Path:
+    """
+    Create Company_Role folder with pre-populated JD from quick-fit artifact.
+    If artifact_text is empty, falls back to blank JD template.
+    """
+    folder_path = Path(job_search_root) / folder_name
+    folder_path.mkdir(parents=True, exist_ok=True)
+
+    if not folder_path.exists():
+        raise OSError(f"Folder creation failed: {folder_path}")
+
+    jd_filename = f"JD_{folder_name}.txt"
+    jd_path = folder_path / jd_filename
+
+    if artifact_text.strip():
+        display_name = folder_name.replace("_", " ")
+        jd_path.write_text(
+            f"Job Description — {display_name}\n"
+            f"{'=' * len('Job Description — ' + display_name)}\n\n"
+            f"--- Job Description ---\n\n"
+            f"{artifact_text}\n",
+            encoding="utf-8",
+        )
+    else:
+        _create_blank_jd(jd_path, folder_name)
+
+    return folder_path
+
+
 def _create_blank_jd(jd_path: Path, folder_name: str) -> None:
     """
     Create a blank job description text file.

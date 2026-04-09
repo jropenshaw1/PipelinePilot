@@ -500,10 +500,33 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
     role = entry.get("role_title", "UnknownRole")
     folder_name = filesystem.generate_folder_name(company, role)
 
-    # Guard: duplicate folder
-    if filesystem.folder_exists(job_search_root, folder_name):
+    # Check for orphaned states before proceeding
+    folder_on_disk = filesystem.folder_exists(job_search_root, folder_name)
+    with _connect(db_path) as conn:
+        existing_opp = conn.execute(
+            "SELECT folder_name FROM opportunities WHERE folder_name = ?",
+            (folder_name,),
+        ).fetchone()
+
+    if existing_opp and not folder_on_disk:
+        # DB orphan: record exists but folder was deleted — clean up the record
+        with _connect(db_path) as conn:
+            conn.execute(
+                "DELETE FROM opportunities WHERE folder_name = ?",
+                (folder_name,),
+            )
+            conn.commit()
+        existing_opp = None  # cleared — proceed normally
+
+    if folder_on_disk and not existing_opp:
+        # Folder orphan: folder exists but no DB record (e.g. prior promote
+        # created folder then crashed before DB insert) — skip folder creation,
+        # just create the DB record below
+        pass
+    elif folder_on_disk and existing_opp:
+        # Both exist — genuine duplicate
         raise ValueError(
-            f"Folder '{folder_name}' already exists. "
+            f"Folder '{folder_name}' already exists with a pipeline record. "
             "Use the existing opportunity or rename."
         )
 
@@ -517,11 +540,12 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
         entry.get("source_channel", "other"), "Other"
     )
 
-    # Create folder with pre-populated JD
+    # Create folder with pre-populated JD (skip if folder already exists)
     artifact_text = entry.get("opportunity_artifact") or ""
-    filesystem.create_opportunity_folder_with_jd(
-        job_search_root, folder_name, company, role, artifact_text
-    )
+    if not folder_on_disk:
+        filesystem.create_opportunity_folder_with_jd(
+            job_search_root, folder_name, company, role, artifact_text
+        )
 
     # Build and insert opportunity record
     record = {

@@ -1037,7 +1037,11 @@ class PipelinePilotApp(ctk.CTk):
 
     def _promote_qfl_entry(self, qfl_id: int):
         """Promote a quick-fit entry to a full pipeline opportunity."""
+        print(f"[PROMOTE] Called with qfl_id={qfl_id} (type={type(qfl_id).__name__})")
+
         if not self.db_path or not self.cfg.get("job_search_root"):
+            print(f"[PROMOTE] Not configured: db_path={self.db_path}, "
+                  f"job_search_root={self.cfg.get('job_search_root')}")
             messagebox.showwarning(
                 "Not Configured",
                 "Set your job search root folder in Settings first.",
@@ -1046,6 +1050,7 @@ class PipelinePilotApp(ctk.CTk):
 
         # Fetch the entry for confirmation dialog
         entries = database.get_quick_fit_entries(self.db_path)
+        print(f"[PROMOTE] Fetched {len(entries)} QFL entries, searching for id={qfl_id}")
         entry = None
         for e in entries:
             if e.get("id") == qfl_id:
@@ -1053,13 +1058,18 @@ class PipelinePilotApp(ctk.CTk):
                 break
 
         if not entry:
+            print(f"[PROMOTE] Entry not found. Available IDs: "
+                  f"{[e.get('id') for e in entries[:10]]}")
             messagebox.showerror("Not Found", f"Quick-fit entry #{qfl_id} not found.")
             return
+
+        print(f"[PROMOTE] Found entry: {entry.get('company_name')} / "
+              f"{entry.get('role_title')} / promoted={entry.get('promoted_to_pipeline')}")
 
         company = entry.get("company_name", "Unknown")
         role = entry.get("role_title", "?")
         folder_preview = filesystem.generate_folder_name(company, role)
-        has_artifact = bool(entry.get("opportunity_artifact", "").strip())
+        has_artifact = bool((entry.get("opportunity_artifact") or "").strip())
 
         # Confirmation dialog
         artifact_note = (
@@ -1080,11 +1090,13 @@ class PipelinePilotApp(ctk.CTk):
             return
 
         try:
+            print(f"[PROMOTE] Calling database.promote_quick_fit({qfl_id})")
             result = database.promote_quick_fit(
                 self.db_path,
                 qfl_id,
                 self.cfg["job_search_root"],
             )
+            print(f"[PROMOTE] Success: {result}")
             messagebox.showinfo(
                 "Promoted",
                 f"✅ Promoted to pipeline.\n\n"
@@ -1096,8 +1108,10 @@ class PipelinePilotApp(ctk.CTk):
             self._show_quick_fit_log()
 
         except ValueError as e:
+            print(f"[PROMOTE] ValueError: {e}")
             messagebox.showwarning("Cannot Promote", str(e))
         except Exception as e:
+            print(f"[PROMOTE] Exception: {type(e).__name__}: {e}")
             messagebox.showerror("Promotion Failed", f"An error occurred:\n\n{e}")
 
     # ── OpenBrain Import ──────────────────────
@@ -1153,6 +1167,8 @@ class PipelinePilotApp(ctk.CTk):
 
         if result["parse_failures"]:
             lines.append(f"Parse failures: {len(result['parse_failures'])}")
+            for pf in result["parse_failures"][:5]:
+                lines.append(f"  • {pf}")
 
         if result["errors"]:
             lines.append(f"Errors: {len(result['errors'])}")

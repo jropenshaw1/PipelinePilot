@@ -1,2 +1,2 @@
 @echo off
-start pythonw pipelinepilot.py
+start python pipelinepilot.py
