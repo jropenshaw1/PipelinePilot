@@ -56,6 +56,17 @@ def _sanitize(text: str) -> str:
 MODEL = "claude-sonnet-4-20250514"
 MAX_TOKENS = 8000
 
+# Stage definitions for the progress dialog.
+# Each tuple: (stage_id, display_label, subtitle)
+ANALYSIS_STAGES = [
+    ("read_inputs",     "Read Inputs",      "JD + Resume"),
+    ("api_call",        "AI Analysis",      "All agents (single call)"),
+    ("fit_summary",     "Fit Summary",      "Score + alignment report"),
+    ("cover_letter",    "Cover Letter",     "Personalized letter"),
+    ("resume",          "Tailored Resume",  "ATS-ready copy"),
+    ("interview_guide", "Interview Guide",  "Prep questions + strategies"),
+]
+
 # Default API key location — same as Streamlit version
 _API_KEY_FILENAME = "ClaudeAPIkey.txt"
 
@@ -586,9 +597,9 @@ def run_fit_analysis(
     context_skill_path: str = "",  # path to personal SKILL.md; omit for neutral output
 ) -> threading.Thread:
 
-    def _p(step, detail=""):
+    def _p(step, detail="", stage=None):
         if progress_cb:
-            progress_cb(step, detail)
+            progress_cb(step, detail, stage)
 
     def _worker():
         try:
@@ -611,7 +622,7 @@ def run_fit_analysis(
             role = opp["role_title"]
             job_url = opp.get("job_url")
 
-            _p("Reading job description...")
+            _p("Reading job description...", stage="read_inputs")
             jd_file = find_jd_file(folder_path)
             jd_text = extract_docx_text(jd_file) if jd_file.suffix == ".docx" \
                 else _read_text_file(jd_file)
@@ -623,7 +634,7 @@ def run_fit_analysis(
                 )
                 return
 
-            _p("Reading master resume...")
+            _p("Reading master resume...", stage="read_inputs")
             resume_file = Path(resume_path)
             if not resume_file.exists():
                 on_error(f"Resume not found:\n{resume_path}\n\nUpdate Settings → Resume Path.")
@@ -634,7 +645,7 @@ def run_fit_analysis(
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
             # values as named facts at the top of the user message.
-            _p("Running fit analysis...", "All agents (single call)")
+            _p("Running fit analysis...", "All agents (single call)", stage="api_call")
             personal_context = _load_context_skill(context_skill_path)
             result = _call_api(client, jd_text[:8000], resume_text[:6000], company, role,
                                personal_context=personal_context)
@@ -644,23 +655,23 @@ def run_fit_analysis(
                 "HOLD" if result["fit_score"] >= 0.60 else "PASS"
             )
 
-            _p("Writing fit_analysis.md...")
+            _p("Writing fit_analysis.md...", stage="fit_summary")
             md_path = write_fit_analysis_md(
                 folder_path, company, role, job_url, fit_threshold, result
             )
 
-            _p("Generating fit summary...")
+            _p("Generating fit summary...", stage="fit_summary")
             fa_path = generate_fit_summary(result, company, role, folder_path)
 
-            _p("Generating cover letter...")
+            _p("Generating cover letter...", stage="cover_letter")
             cl_path = generate_cover_letter(result, company, role, folder_path)
 
-            _p("Generating tailored resume...")
+            _p("Generating tailored resume...", stage="resume")
             res_path = generate_tailored_resume(
                 result, company, role, folder_path, resume_path
             )
 
-            _p("Generating interview prep guide...")
+            _p("Generating interview prep guide...", stage="interview_guide")
             ip_path = generate_interview_guide(result, company, role, folder_path)
 
             # Update SQLite
@@ -677,7 +688,7 @@ def run_fit_analysis(
             })
 
             output_files = [md_path, fa_path, cl_path, res_path, ip_path]
-            _p("Complete.", f"{result['fit_score']:.0%} — {recommendation}")
+            _p("Complete.", f"{result['fit_score']:.0%} — {recommendation}", stage="complete")
             on_success(result, output_files)
 
         except Exception as e:

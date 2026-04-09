@@ -1970,7 +1970,7 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
         self._done = False
 
         self.title(f"Analyzing — {opp['company_name']}")
-        self.geometry("520x440")
+        self.geometry("540x580")
         self.resizable(False, False)
         self.grab_set()
         self.focus_set()
@@ -1992,22 +1992,58 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=12), text_color=C_MUTED,
         ).pack(anchor="w", pady=(0, 20))
 
+        # Stage cards grid (2 columns × 3 rows)
+        self._stage_cards = {}
+        stages = fit_analysis_engine.ANALYSIS_STAGES
+        grid = ctk.CTkFrame(f, fg_color="transparent")
+        grid.pack(fill="x", pady=(0, 16))
+        grid.columnconfigure((0, 1), weight=1)
+
+        for i, (stage_id, label, sub) in enumerate(stages):
+            row, col = divmod(i, 2)
+            card = ctk.CTkFrame(grid, fg_color=C_CARD, corner_radius=10, height=72)
+            card.grid(row=row, column=col, padx=6, pady=6, sticky="ew")
+            card.grid_propagate(False)
+            card.columnconfigure(1, weight=1)
+
+            icon_lbl = ctk.CTkLabel(
+                card, text="\u25CB", font=ctk.CTkFont(size=16),
+                text_color=C_MUTED, width=32,
+            )
+            icon_lbl.grid(row=0, column=0, rowspan=2, padx=(12, 4), pady=8)
+
+            name_lbl = ctk.CTkLabel(
+                card, text=label,
+                font=ctk.CTkFont(size=12, weight="bold"), text_color=C_MUTED,
+                anchor="w",
+            )
+            name_lbl.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(10, 0))
+
+            sub_lbl = ctk.CTkLabel(
+                card, text=sub,
+                font=ctk.CTkFont(size=10), text_color=C_MUTED,
+                anchor="w",
+            )
+            sub_lbl.grid(row=1, column=1, sticky="w", padx=(0, 12), pady=(0, 10))
+
+            self._stage_cards[stage_id] = {
+                "card": card, "icon": icon_lbl,
+                "name": name_lbl, "sub": sub_lbl,
+                "state": "pending",
+            }
+
+        # Current step text (below grid)
         self._step_var = ctk.StringVar(value="Starting...")
         ctk.CTkLabel(
             f, textvariable=self._step_var,
-            font=ctk.CTkFont(size=13, weight="bold"), text_color=C_BLUE,
-        ).pack(anchor="w")
+            font=ctk.CTkFont(size=11), text_color=C_BLUE,
+        ).pack(anchor="w", pady=(0, 2))
 
         self._detail_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             f, textvariable=self._detail_var,
-            font=ctk.CTkFont(size=11), text_color=C_MUTED,
-        ).pack(anchor="w", pady=(2, 14))
-
-        self._progress = ctk.CTkProgressBar(f, width=460)
-        self._progress.pack(anchor="w")
-        self._progress.configure(mode="indeterminate")
-        self._progress.start()
+            font=ctk.CTkFont(size=10), text_color=C_MUTED,
+        ).pack(anchor="w", pady=(0, 8))
 
         # Results card (shown on success)
         self._results_card = ctk.CTkFrame(f, fg_color=C_CARD, corner_radius=10)
@@ -2056,16 +2092,49 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             context_skill_path=self.cfg.get("context_skill_path", ""),
         )
 
-    def _handle_progress(self, step: str, detail: str = ""):
-        self.after(0, lambda: self._step_var.set(step))
-        self.after(0, lambda: self._detail_var.set(detail))
+    def _handle_progress(self, step: str, detail: str = "", stage: str = None):
+        def _update():
+            self._step_var.set(step)
+            self._detail_var.set(detail)
+            if stage and stage != "complete":
+                stage_ids = [s[0] for s in fit_analysis_engine.ANALYSIS_STAGES]
+                if stage in stage_ids:
+                    current_idx = stage_ids.index(stage)
+                    for i, sid in enumerate(stage_ids):
+                        if i < current_idx:
+                            self._set_card_state(sid, "complete")
+                        elif i == current_idx:
+                            self._set_card_state(sid, "active")
+        self.after(0, _update)
+
+    def _set_card_state(self, stage_id: str, state: str):
+        """Update a stage card's visual state: pending, active, or complete."""
+        card_info = self._stage_cards.get(stage_id)
+        if not card_info or card_info["state"] == state:
+            return
+        card_info["state"] = state
+        if state == "pending":
+            card_info["card"].configure(fg_color=C_CARD)
+            card_info["icon"].configure(text="\u25CB", text_color=C_MUTED)
+            card_info["name"].configure(text_color=C_MUTED)
+            card_info["sub"].configure(text_color=C_MUTED)
+        elif state == "active":
+            card_info["card"].configure(fg_color=C_PANEL)
+            card_info["icon"].configure(text="\u2699", text_color=C_BLUE)
+            card_info["name"].configure(text_color=C_BLUE)
+            card_info["sub"].configure(text_color=C_BLUE)
+        elif state == "complete":
+            card_info["card"].configure(fg_color=C_CARD)
+            card_info["icon"].configure(text="\u2713", text_color=C_SUCCESS)
+            card_info["name"].configure(text_color=C_SUCCESS)
+            card_info["sub"].configure(text_color=C_MUTED)
 
     def _handle_success(self, result: dict, output_files):
         def _update():
             self._done = True
-            self._progress.stop()
-            self._progress.set(1.0)
-            self._progress.configure(mode="determinate")
+            # Mark all stages complete
+            for stage_id, _, _ in fit_analysis_engine.ANALYSIS_STAGES:
+                self._set_card_state(stage_id, "complete")
             self._step_var.set("Analysis complete.")
             self._detail_var.set("")
             rec = ("APPLY" if result["fit_score"] >= 0.75 else
@@ -2083,7 +2152,6 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
     def _handle_error(self, message: str):
         def _update():
             self._done = True
-            self._progress.stop()
             self._step_var.set("Analysis failed.")
             self._detail_var.set("")
             self._error_var.set(message)
