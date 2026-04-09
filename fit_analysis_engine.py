@@ -237,6 +237,7 @@ def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
     message = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
+        temperature=0,
         system=effective_prompt,
         messages=[{
             "role": "user",
