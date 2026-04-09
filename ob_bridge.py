@@ -379,7 +379,19 @@ def run_import(
             records.append(parsed)
         else:
             ob_id = thought.get("id", "unknown")
-            result["parse_failures"].append(ob_id)
+            content = thought.get("content", "")
+            # Extract company and role from raw content for diagnostics
+            company_hint = "unknown"
+            role_hint = "unknown"
+            for line in content.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("company_name:"):
+                    company_hint = stripped.partition(":")[2].strip() or "unknown"
+                elif stripped.startswith("role_title:"):
+                    role_hint = stripped.partition(":")[2].strip() or "unknown"
+            result["parse_failures"].append(
+                f"{ob_id} — {company_hint} / {role_hint}"
+            )
 
     result["parsed"] = len(records)
 
