@@ -146,6 +146,12 @@ CRITICAL — Job title accuracy: The authoritative job title is provided at the 
 message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the
 cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
+Candidate contact: If the PERSONAL CONTEXT section below contains contact details (full name,
+email, phone, location, LinkedIn), extract them and populate the candidate_contact object in
+the JSON response. The personal context is the authoritative source for these values — do NOT
+parse them from the resume. If personal context is absent or a specific field is missing,
+return an empty string for that field.
+
 You must respond with a JSON object and nothing else. No markdown, no preamble.
 The JSON must have exactly this structure:
 {
@@ -162,6 +168,13 @@ The JSON must have exactly this structure:
   "auditor_case": "Honest risks and concerns",
   "next_steps": ["step 1", "step 2", "step 3"],
   "cover_letter": "Full cover letter text, professional, 3-4 paragraphs, no placeholders",
+  "candidate_contact": {
+    "name": "Full name from personal context, or empty string",
+    "email": "Email from personal context, or empty string",
+    "phone": "Phone from personal context, or empty string",
+    "location": "City and state from personal context, or empty string",
+    "linkedin": "LinkedIn URL from personal context, or empty string"
+  },
   "resume_highlights": ["bullet 1 tailored to this JD", "bullet 2", "bullet 3", "bullet 4", "bullet 5"],
   "interview_guide": [
     {"question": "question text", "type": "behavioral|technical|situational", "strategy": "recommended answer approach drawing on candidate's specific experience"}
@@ -348,7 +361,7 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
 
     doc.add_paragraph()
     _heading(doc, "⚠️ Before You Apply", 2)
-    _bullet(doc, "Cover letter — add your name and contact information to the top and your name to the signature before sending to any employer.")
+    _bullet(doc, "Cover letter — verify the contact header and signature name are accurate before sending.")
     _bullet(doc, "Review all AI-generated content — read the cover letter and tailored resume carefully before submitting. Do not send unreviewed AI output to a potential employer.")
     _bullet(doc, "If you update your resume based on any gap items above, rerun this analysis before applying.")
 
@@ -360,31 +373,75 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
 def generate_cover_letter(result: dict, company: str, role: str, folder_path: Path) -> Path:
     doc = Document()
     doc.core_properties.author = ""
+
+    # Tighten margins to maximize content area for one-page fit.
+    for section in doc.sections:
+        section.top_margin    = Inches(0.8)
+        section.bottom_margin = Inches(0.8)
+        section.left_margin   = Inches(0.9)
+        section.right_margin  = Inches(0.9)
+
     now_str = datetime.now().strftime("%B %d, %Y")
 
-    # ⚠️ Contact info intentionally omitted — add your name and contact details
-    # to the top of this letter before sending to any employer.
+    # Contact header — populated from personal context skill if available.
+    # If candidate_contact is missing or empty, header is omitted (legacy behavior).
+    contact = result.get("candidate_contact") or {}
+    contact_name     = (contact.get("name")     or "").strip()
+    contact_email    = (contact.get("email")    or "").strip()
+    contact_phone    = (contact.get("phone")    or "").strip()
+    contact_location = (contact.get("location") or "").strip()
+    contact_linkedin = (contact.get("linkedin") or "").strip()
 
-    doc.add_paragraph(now_str)
-    doc.add_paragraph()
-    doc.add_paragraph(f"Dear {company} Hiring Team,")
-    doc.add_paragraph()
+    if contact_name:
+        name_p = doc.add_paragraph()
+        name_p.paragraph_format.space_after = Pt(2)
+        name_run = name_p.add_run(contact_name)
+        name_run.bold = True
+        name_run.font.size = Pt(13)
 
-    # Strip any salutation/closing the API included — we add those structurally.
-    # company and role are passed explicitly to _call_api so the model has the
-    # authoritative title as a named fact — no regex correction needed here.
-    _salutation_patterns = ("dear ", "sincerely", "best regards", "regards,")
-    body_lines = [
-        line for line in result["cover_letter"].split("\n")
-        if line.strip() and not line.strip().lower().startswith(_salutation_patterns)
-    ]
+        # Single-line contact strip with bullet separators (no em dashes)
+        contact_parts = [p for p in (contact_location, contact_phone, contact_email) if p]
+        if contact_parts:
+            cp = doc.add_paragraph(" \u2022 ".join(contact_parts))
+            cp.paragraph_format.space_after = Pt(2)
+        if contact_linkedin:
+            lp = doc.add_paragraph(contact_linkedin)
+            lp.paragraph_format.space_after = Pt(10)
+
+    date_p = doc.add_paragraph(now_str)
+    date_p.paragraph_format.space_after = Pt(10)
+
+    salutation_p = doc.add_paragraph(f"Dear {company} Hiring Team,")
+    salutation_p.paragraph_format.space_after = Pt(6)
+
+    # Strip salutation and closing — we add those structurally.
+    # Break at first closing phrase so the signature name after it is also excluded.
+    _closing_patterns = ("sincerely", "best regards", "regards,", "warm regards",
+                         "kind regards", "respectfully", "yours truly", "best,")
+    body_lines = []
+    for line in result["cover_letter"].split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith("dear "):
+            continue  # Skip salutation — we add our own
+        if stripped.lower().startswith(_closing_patterns):
+            break  # Closing found — discard everything from here on (including signature)
+        body_lines.append(stripped)
+
+    # Render body paragraphs with controlled spacing — no blank paragraphs between.
     for para_text in body_lines:
-        _body(doc, para_text.strip())
-        doc.add_paragraph()
+        body_p = doc.add_paragraph(para_text.strip())
+        body_p.style = "Normal"
+        body_p.paragraph_format.space_after = Pt(6)
 
-    doc.add_paragraph("Sincerely,")
-    doc.add_paragraph()
-    doc.add_paragraph()  # blank line for handwritten or typed signature
+    closing_p = doc.add_paragraph("Sincerely,")
+    closing_p.paragraph_format.space_after = Pt(2)
+    if contact_name:
+        sig_p = doc.add_paragraph(contact_name)
+    else:
+        sig_p = doc.add_paragraph()  # blank line for signature when no name available
+    sig_p.paragraph_format.space_after = Pt(0)
 
     out = folder_path / f"CoverLetter_{_sanitize(company)}_{_sanitize(role)}.docx"
     doc.save(str(out))
@@ -521,7 +578,7 @@ _MD = """\
 
 ### ⚠️ Before You Apply
 
-- **Cover letter** — add your name and contact information to the top of the cover letter and your name to the signature before sending to any employer.
+- **Cover letter** — verify the contact header and signature name are accurate before sending.
 - **Review all AI-generated content** — read the cover letter and tailored resume carefully before submitting. Do not send unreviewed AI output to a potential employer.
 - **If you update your resume** based on any gap items above, rerun this analysis before applying.
 """
