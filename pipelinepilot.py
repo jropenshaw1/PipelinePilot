@@ -446,7 +446,7 @@ class PipelinePilotApp(ctk.CTk):
             cursor="hand2",
         )
         row.pack(fill="x", pady=3)
-        row.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+        row.bind("<Button-1>", lambda *args, o=opp: self._open_detail(o["folder_name"]))
 
         # Company / Role
         name_frame = ctk.CTkFrame(row, fg_color="transparent", width=280)
@@ -519,7 +519,7 @@ class PipelinePilotApp(ctk.CTk):
 
         # Click handler on all children too
         for child in row.winfo_children():
-            child.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+            child.bind("<Button-1>", lambda *args, o=opp: self._open_detail(o["folder_name"]))
 
     def _show_settings(self):
         """FR-30, FR-31, FR-32: Settings screen."""
@@ -1312,7 +1312,7 @@ class PipelinePilotApp(ctk.CTk):
         for opp in opportunities:
             row = ctk.CTkFrame(list_container, fg_color=C_CARD, corner_radius=8, cursor="hand2")
             row.pack(fill="x", pady=3)
-            row.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+            row.bind("<Button-1>", lambda *args, o=opp: self._open_detail(o["folder_name"]))
 
             name_frame = ctk.CTkFrame(row, fg_color="transparent", width=280)
             name_frame.pack(side="left", padx=(12, 4), pady=10)
@@ -1337,7 +1337,7 @@ class PipelinePilotApp(ctk.CTk):
             ctk.CTkLabel(row, text=opp.get("date_applied") or "—", font=ctk.CTkFont(size=11), text_color=C_MUTED, width=80).pack(side="left", padx=4)
 
             for child in row.winfo_children():
-                child.bind("<Button-1>", lambda e, o=opp: self._open_detail(o["folder_name"]))
+                child.bind("<Button-1>", lambda *args, o=opp: self._open_detail(o["folder_name"]))
 
     def _open_detail(self, folder_name: str):
         """FR-08: Open full detail/edit screen for an opportunity."""
