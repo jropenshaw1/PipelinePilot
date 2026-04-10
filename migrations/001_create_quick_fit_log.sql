@@ -62,13 +62,8 @@ CREATE TABLE IF NOT EXISTS quick_fit_log (
 
 -- ── Triggers ──────────────────────────────────────────────
 
--- Auto-promote to pipeline when decision is 'pursue'
-CREATE TRIGGER IF NOT EXISTS trg_auto_promote
-AFTER INSERT ON quick_fit_log
-WHEN NEW.decision = 'pursue'
-BEGIN
-    UPDATE quick_fit_log SET promoted_to_pipeline = 1 WHERE id = NEW.id;
-END;
+-- NOTE: trg_auto_promote removed in migration 004. promote_quick_fit() in
+-- database.py sets promoted_to_pipeline=1 after the full workflow completes.
 
 -- Enforce: pass_reason required when decision='pass'
 CREATE TRIGGER IF NOT EXISTS trg_require_pass_reason

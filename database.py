@@ -128,6 +128,10 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE quick_fit_log ADD COLUMN promoted_folder_name TEXT"
         )
+    # Migration 004: drop trg_auto_promote (must run AFTER 001 recreates it)
+    migration_004 = Path(__file__).parent / "migrations" / "004_drop_auto_promote_trigger.sql"
+    if migration_004.exists():
+        conn.executescript(migration_004.read_text())
 
 
 def create_opportunity(db_path: Path, record: dict) -> None:
