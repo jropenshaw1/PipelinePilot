@@ -141,10 +141,23 @@ each with a recommended answer strategy that draws on their specific experience.
 Mix behavioral (STAR format), technical, and situational questions relevant to the role.
 
 Cover letter: Write a full, specific, professional cover letter (3-4 paragraphs). No placeholders.
-Reference actual accomplishments from the resume. Do not use "I am excited to apply" filler.
-CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user
-message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the
-cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
+Reference actual accomplishments from the resume.
+
+HARD VOICE BANS — these are enforcement rules, not style suggestions. A violation means rewrite the sentence before returning the JSON.
+
+1. No generic openers. Banned phrases: "I am writing to express my interest in," "I am excited to apply for," "I am pleased to submit my application for," and any variant that announces the act of applying. Open with substance — a specific accomplishment or a concrete claim the candidate brings. The opening sentence must contain a fact about the candidate, not a fact about the application.
+
+2. No superlative matching. Do NOT write any sentence whose purpose is to claim alignment between the candidate and the role, company, or stated needs. Banned patterns include: "aligns with," "aligns directly with," "aligns perfectly with," "represents exactly," "is an ideal match for," "uniquely positioned to," "precisely the kind of," "is a natural fit for," "essential for," "required to," "needed for," "proven track record of," and all synonym variations. The rule is structural: any sentence that tells the reader the candidate matches, fits, maps to, demonstrates, or proves readiness for the role is a violation. State the accomplishment. Stop. Let the reader draw the connection.
+
+3. Stay in the candidate's lane. Write what the candidate brings, not what the company needs. Do NOT speculate about what the company "requires," "needs," "is looking for," or "seeks." Do NOT invent a gap and frame the candidate as filling it. Do NOT write "[Company] seeks..." or "[Company]'s need for..." or "to address your..." — the hiring team wrote the JD; they know their needs. If a documented JD requirement is directly relevant, reference it once with tentative framing ("the JD notes...," "the role calls for...") rather than confident framing. Default to silence on company needs.
+
+4. No generic closers. Banned: "contribute to [Company]'s continued growth," "contribute to your operational excellence," "help [Company] achieve its goals," "be a valuable addition to your team," and any variant that promises vague future contribution. Close with something specific the candidate wants to discuss or a direct statement of interest — not a platitude about the company's future.
+
+5. No em dashes anywhere in the cover letter. Use commas, colons, or new sentences.
+
+CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
+
+Self-check before returning JSON: Scan the generated cover_letter field for the five ban categories above. If any banned phrase, pattern, or em dash appears, rewrite the offending sentence before returning. A banned phrase that survives to the response is a failure of this task.
 
 Candidate contact: If the PERSONAL CONTEXT section below contains contact details (full name,
 email, phone, location, LinkedIn), extract them and populate the candidate_contact object in
