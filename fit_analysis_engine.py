@@ -743,6 +743,7 @@ def run_fit_analysis(
                 ][:3]),
                 "top_gaps": str([g["area"] for g in result.get("gaps", [])[:3]]),
                 "status": "Analyzing",
+                "jfa_completed": 1,
             })
 
             output_files = [md_path, fa_path, cl_path, res_path, ip_path]

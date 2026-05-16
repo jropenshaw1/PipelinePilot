@@ -64,11 +64,11 @@ CLOUD_SYNC_INDICATORS = [
 
 # Default configuration values (FR-31, FR-32)
 DEFAULT_FIT_THRESHOLD = 0.65
-DEFAULT_FOLLOW_UP_OFFSET_DAYS = 14
+DEFAULT_FOLLOW_UP_OFFSET_DAYS = 30
 
 # Application metadata
 APP_NAME = "PipelinePilot"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 CONFIG_FILENAME = "pipelinepilot.config"
 DB_FILENAME = "pipelinepilot.db"
 
