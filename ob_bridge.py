@@ -44,6 +44,7 @@ RATIONALE_RE = re.compile(
 # Valid enum values (mirror SQLite CHECK constraints from migration 001)
 VALID_SOURCE_CHANNELS = {
     "linkedin", "jobright", "indeed", "ladders",
+    "dice", "jobgether", "ziprecruiter",
     "recruiter-outreach", "referral",
     "go-fractional", "nates-network", "other",
 }
