@@ -124,6 +124,8 @@ class PipelinePilotApp(ctk.CTk):
             ("📊  Dashboard", self._show_dashboard),
             ("📋  Opportunities", self._show_list),
             ("⚡  Quick-Fit Log", self._show_quick_fit_log),
+            ("📅  Follow-ups Due", self._show_followups),
+            ("🎯  Pursuit Tracker", self._show_pursuit_tracker),
             ("📥  Import from OB", self._run_ob_import),
             ("⚙️  Settings", self._show_settings),
         ]
@@ -145,8 +147,11 @@ class PipelinePilotApp(ctk.CTk):
             btn.grid(row=i + 2, column=0, padx=12, pady=3, sticky="ew")
             self._nav_buttons[label] = btn
 
+        # Update follow-ups badge on startup (and after every nav)
+        self._refresh_followup_badge()
+
         # Capture button at bottom of sidebar
-        self.sidebar.grid_rowconfigure(10, weight=1)
+        self.sidebar.grid_rowconfigure(12, weight=1)
         capture_btn = ctk.CTkButton(
             self.sidebar,
             text="＋  Capture Opportunity",
@@ -157,12 +162,32 @@ class PipelinePilotApp(ctk.CTk):
             height=44,
             corner_radius=8,
         )
-        capture_btn.grid(row=11, column=0, padx=12, pady=(0, 12), sticky="ew")
+        capture_btn.grid(row=13, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     def _clear_content(self):
         """Remove all widgets from the content area."""
         for widget in self.content.winfo_children():
             widget.destroy()
+        # Keep sidebar badge current after every navigation
+        if hasattr(self, "_nav_buttons"):
+            self._refresh_followup_badge()
+
+    def _refresh_followup_badge(self):
+        """Update the Follow-ups Due sidebar button text and state."""
+        btn_key = "📅  Follow-ups Due"
+        btn = self._nav_buttons.get(btn_key)
+        if not btn:
+            return
+        if not self.db_path:
+            btn.configure(text="📅  Follow-ups Due (0)", state="disabled",
+                          text_color=C_MUTED)
+            return
+        count = database.get_followups_due_count(self.db_path)
+        btn.configure(text=f"📅  Follow-ups Due ({count})")
+        if count > 0:
+            btn.configure(state="normal", text_color=C_ACCENT)
+        else:
+            btn.configure(state="disabled", text_color=C_MUTED)
 
     # ── Navigation ────────────────────────────
 
@@ -1238,21 +1263,7 @@ class PipelinePilotApp(ctk.CTk):
         """Drill-down view: opportunities with follow-up dates on or before today."""
         self._clear_content()
 
-        import sqlite3
-        today = date.today().isoformat()
-
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT * FROM opportunities
-            WHERE follow_up_date IS NOT NULL
-              AND follow_up_date <= ?
-              AND archived = 0
-              AND status NOT IN ('Passed','Offer','Closed','Rejected')
-            ORDER BY follow_up_date ASC
-        """, (today,)).fetchall()
-        conn.close()
-        opportunities = [dict(r) for r in rows]
+        opportunities = database.get_followups_due(self.db_path) if self.db_path else []
 
         outer = ctk.CTkFrame(self.content, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=24, pady=24)
@@ -1343,7 +1354,180 @@ class PipelinePilotApp(ctk.CTk):
         """FR-08: Open full detail/edit screen for an opportunity."""
         detail = DetailWindow(self, folder_name, self.db_path, self.cfg)
         self.wait_window(detail)
-        self._show_list()
+        # Return to wherever the user navigated from
+        if hasattr(self, "_return_to_pursuit") and self._return_to_pursuit:
+            self._return_to_pursuit = False
+            self._show_pursuit_tracker()
+        else:
+            self._show_list()
+
+    # ── Pursuit Tracker View ──────────────────
+
+    def _show_pursuit_tracker(self):
+        """Pursuit tracker: filtered view of Pursuing/Analyzing opportunities with checklist columns."""
+        self._clear_content()
+
+        if not self.db_path:
+            self._show_first_launch()
+            return
+
+        # Fetch only Pursuing and Analyzing status opportunities
+        pursuing = database.get_all_opportunities(self.db_path, status_filter="Pursuing")
+        analyzing = database.get_all_opportunities(self.db_path, status_filter="Analyzing")
+        opportunities = analyzing + pursuing  # Analyzing first, then Pursuing
+
+        outer = ctk.CTkFrame(self.content, fg_color="transparent")
+        outer.pack(fill="both", expand=True, padx=24, pady=24)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        # Header
+        header = ctk.CTkFrame(outer, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+
+        ctk.CTkLabel(
+            header,
+            text=f"🎯 Pursuit Tracker  ({len(opportunities)})",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(side="left")
+
+        # List container
+        list_container = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        list_container.grid(row=1, column=0, sticky="nsew")
+        list_container.columnconfigure(0, weight=1)
+
+        if not opportunities:
+            ctk.CTkLabel(
+                list_container,
+                text="No opportunities in Analyzing or Pursuing status.\n"
+                     "Promote a quick-fit entry and run JFA to get started.",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=13),
+                justify="center",
+            ).pack(pady=40)
+            return
+
+        # Column headers
+        header_row = ctk.CTkFrame(list_container, fg_color="transparent")
+        header_row.pack(fill="x", pady=(0, 4))
+        col_defs = [
+            (200, "Company / Role"),
+            (70,  "Score"),
+            (80,  "Status"),
+            (50,  "JFA"),
+            (50,  "CL"),
+            (50,  "Resume"),
+            (90,  "Action"),
+        ]
+        for w, lbl in col_defs:
+            ctk.CTkLabel(
+                header_row,
+                text=lbl,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=C_MUTED,
+                width=w,
+                anchor="w",
+            ).pack(side="left", padx=4)
+
+        for opp in opportunities:
+            self._pursuit_row(list_container, opp)
+
+    def _pursuit_row(self, container, opp: dict):
+        """Render a single pursuit tracker row with checklist columns."""
+        row = ctk.CTkFrame(container, fg_color=C_CARD, corner_radius=8, cursor="hand2")
+        row.pack(fill="x", pady=3)
+
+        def open_detail(*_):
+            self._return_to_pursuit = True
+            self._open_detail(opp["folder_name"])
+
+        row.bind("<Button-1>", open_detail)
+
+        # Company / Role
+        name_frame = ctk.CTkFrame(row, fg_color="transparent", width=200)
+        name_frame.pack(side="left", padx=(12, 4), pady=10)
+        name_frame.pack_propagate(False)
+        ctk.CTkLabel(
+            name_frame, text=opp["company_name"],
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=C_TEXT, anchor="w",
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            name_frame, text=opp["role_title"],
+            font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w",
+        ).pack(fill="x")
+
+        # Fit score
+        fit = opp.get("fit_score")
+        threshold = opp.get("fit_threshold", 0.65)
+        if fit is not None:
+            fit_color = C_SUCCESS if fit >= threshold else C_WARNING
+            fit_text = f"{fit:.0%}"
+        else:
+            fit_color = C_MUTED
+            fit_text = "--"
+        ctk.CTkLabel(
+            row, text=fit_text, font=ctk.CTkFont(size=12),
+            text_color=fit_color, width=70,
+        ).pack(side="left", padx=4)
+
+        # Status badge
+        status = opp.get("status", "New")
+        ctk.CTkLabel(
+            row, text=status, font=ctk.CTkFont(size=11),
+            fg_color=C_BLUE, corner_radius=6, text_color="white", width=80,
+        ).pack(side="left", padx=4)
+
+        # Checkbox columns: JFA, CL Reviewed, Resume Reviewed
+        for col_key in ("jfa_completed", "cl_reviewed", "resume_reviewed"):
+            checked = opp.get(col_key, 0)
+            icon = "\u2713" if checked else "\u25CB"
+            color = C_SUCCESS if checked else C_MUTED
+            ctk.CTkLabel(
+                row, text=icon, font=ctk.CTkFont(size=14),
+                text_color=color, width=50,
+            ).pack(side="left", padx=4)
+
+        # Mark Applied button (only if not already Applied or beyond)
+        applied_statuses = {"Applied", "In Review", "Interviewing", "Offer", "Closed", "Rejected"}
+        if opp.get("status") not in applied_statuses:
+            all_checked = (
+                opp.get("jfa_completed", 0) == 1
+                and opp.get("cl_reviewed", 0) == 1
+                and opp.get("resume_reviewed", 0) == 1
+            )
+            btn_color = C_ACCENT if all_checked else C_PANEL
+            ctk.CTkButton(
+                row,
+                text="Mark Applied",
+                command=lambda fn=opp["folder_name"]: self._mark_applied(fn),
+                fg_color=btn_color,
+                hover_color="#c73652" if all_checked else C_BLUE,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                width=90, height=28, corner_radius=6,
+            ).pack(side="left", padx=4)
+        else:
+            ctk.CTkLabel(
+                row, text=f"\u2713 {opp.get('status')}",
+                font=ctk.CTkFont(size=10), text_color=C_SUCCESS, width=90,
+            ).pack(side="left", padx=4)
+
+        # Bind click on all children too
+        for child in row.winfo_children():
+            if not isinstance(child, ctk.CTkButton):
+                child.bind("<Button-1>", open_detail)
+
+    def _mark_applied(self, folder_name: str):
+        """One-click: set status=Applied, date_applied=today, follow_up=today+offset."""
+        today_str = date.today().isoformat()
+        offset = self.cfg.get("follow_up_offset_days", 30)
+        follow_up = (date.today() + timedelta(days=offset)).isoformat()
+        database.update_opportunity(self.db_path, folder_name, {
+            "status": "Applied",
+            "date_applied": today_str,
+            "follow_up_date": follow_up,
+        })
+        self._show_pursuit_tracker()
 
     # ── Config helpers ─────────────────────────
 
@@ -1789,6 +1973,26 @@ class DetailWindow(ctk.CTkToplevel):
         self._field_check(main, "Decision Override (overrides Job Fit Analyst recommendation)", "decision_override")
         self._field_area(main, "Decision Notes", "decision_notes")
 
+        # ── Pursuit Checklist ──
+        self._section(main, "Pursuit Checklist")
+        self._field_check(main, "JFA completed", "jfa_completed")
+        self._field_check(main, "Cover letter reviewed", "cl_reviewed")
+        self._field_check(main, "Resume reviewed", "resume_reviewed")
+
+        # Mark Applied one-click (only if not already Applied or beyond)
+        applied_statuses = {"Applied", "In Review", "Interviewing", "Offer", "Closed", "Rejected"}
+        if opp.get("status") not in applied_statuses:
+            mark_btn = ctk.CTkButton(
+                main,
+                text="Mark Applied",
+                command=self._mark_applied_from_detail,
+                fg_color=C_ACCENT,
+                hover_color="#c73652",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=140, height=36, corner_radius=8,
+            )
+            mark_btn.pack(anchor="w", pady=(4, 8))
+
         # ── Contact ──
         self._section(main, "Contact")
         self._field_text(main, "Contact Name", "contact_name")
@@ -1902,18 +2106,44 @@ class DetailWindow(ctk.CTkToplevel):
                 val = widget.get("1.0", "end").strip() or None
                 updates[key] = val
 
+        # Auto-fill date_applied when status changes to Applied and field is empty
+        if updates.get("status") == "Applied" and not updates.get("date_applied"):
+            updates["date_applied"] = date.today().isoformat()
+
         # FR-18: Handle follow-up auto-set
         if updates.get("status") == "Applied" and updates.get("date_applied"):
             if not updates.get("follow_up_date"):
                 try:
                     applied = date.fromisoformat(updates["date_applied"])
-                    offset = self.cfg.get("follow_up_offset_days", 14)
+                    offset = self.cfg.get("follow_up_offset_days", 30)
                     updates["follow_up_date"] = (applied + timedelta(days=offset)).isoformat()
                 except ValueError:
                     pass
 
         database.update_opportunity(self.db_path, self.folder_name, updates)
         messagebox.showinfo("Saved", "Changes saved successfully.")
+        self.destroy()
+
+    def _mark_applied_from_detail(self):
+        """One-click Mark Applied from the detail view."""
+        today_str = date.today().isoformat()
+        offset = self.cfg.get("follow_up_offset_days", 30)
+        follow_up = (date.today() + timedelta(days=offset)).isoformat()
+
+        # Also save any pending checkbox state before marking applied
+        updates = {
+            "status": "Applied",
+            "date_applied": today_str,
+            "follow_up_date": follow_up,
+        }
+        # Capture current checkbox values
+        for key in ("jfa_completed", "cl_reviewed", "resume_reviewed", "decision_override"):
+            widget = self._fields.get(key)
+            if isinstance(widget, ctk.IntVar):
+                updates[key] = widget.get()
+
+        database.update_opportunity(self.db_path, self.folder_name, updates)
+        messagebox.showinfo("Applied", "Status set to Applied. Follow-up date auto-set.")
         self.destroy()
 
     def _run_fit_analysis(self):
