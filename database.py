@@ -6,7 +6,7 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
-from models import DB_FILENAME
+from models import DB_FILENAME, DEFAULT_FOLLOW_UP_OFFSET_DAYS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS opportunities (
@@ -133,6 +133,15 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
     if migration_004.exists():
         conn.executescript(migration_004.read_text())
 
+    # Migration 006: pursuit tracker columns (cl_reviewed, resume_reviewed, jfa_completed)
+    for col_name in ("cl_reviewed", "resume_reviewed", "jfa_completed"):
+        try:
+            conn.execute(f"SELECT {col_name} FROM opportunities LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(
+                f"ALTER TABLE opportunities ADD COLUMN {col_name} INTEGER NOT NULL DEFAULT 0"
+            )
+
 
 def create_opportunity(db_path: Path, record: dict) -> None:
     """FR-06: Create record simultaneously with folder creation."""
@@ -205,7 +214,7 @@ def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
             applied = date.fromisoformat(updates["date_applied"])
             updates.setdefault(
                 "follow_up_date",
-                (applied + timedelta(days=14)).isoformat(),
+                (applied + timedelta(days=DEFAULT_FOLLOW_UP_OFFSET_DAYS)).isoformat(),
             )
 
     set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
@@ -269,6 +278,36 @@ def get_dashboard_metrics(db_path: Path) -> dict:
         "above_threshold": above_threshold,
         "follow_ups_due": follow_ups_due,
     }
+
+
+_FOLLOWUPS_DUE_WHERE = (
+    "follow_up_date IS NOT NULL "
+    "AND follow_up_date <= ? "
+    "AND archived = 0 "
+    "AND status NOT IN ('Passed','Offer','Closed','Rejected')"
+)
+
+
+def get_followups_due_count(db_path: Path) -> int:
+    """Return count of opportunities with follow-up dates on or before today."""
+    today = date.today().isoformat()
+    with _connect(db_path) as conn:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM opportunities WHERE {_FOLLOWUPS_DUE_WHERE}",
+            (today,),
+        ).fetchone()[0]
+
+
+def get_followups_due(db_path: Path) -> list[dict]:
+    """Return opportunities with follow-up dates on or before today, sorted oldest first."""
+    today = date.today().isoformat()
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM opportunities WHERE {_FOLLOWUPS_DUE_WHERE} "
+            "ORDER BY follow_up_date ASC",
+            (today,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.65) -> dict:
