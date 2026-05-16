@@ -16,6 +16,7 @@ DB_PATH = os.environ.get("PIPELINEPILOT_DB", "pipelinepilot.db")
 # ── Enums (mirror schema CHECK constraints) ────────────────
 SOURCE_CHANNELS = [
     "linkedin", "jobright", "indeed", "ladders",
+    "dice", "jobgether", "ziprecruiter",
     "recruiter-outreach", "referral",
     "go-fractional", "nates-network", "other",
 ]
@@ -70,12 +71,25 @@ def insert_entry(data: dict) -> int:
     return row_id
 
 
-def recent_entries(limit: int = 20):
-    """Fetch recent entries for the sidebar log."""
+# ── Sortable columns for dashboard ─────────────────────────
+SORT_COLUMNS = {
+    "Date (newest)": "timestamp DESC",
+    "Date (oldest)": "timestamp ASC",
+    "Company (A-Z)": "company_name ASC",
+    "Company (Z-A)": "company_name DESC",
+    "Source": "source_channel ASC, timestamp DESC",
+    "Fit (strongest)": "CASE quick_fit WHEN 'strong' THEN 1 WHEN 'moderate' THEN 2 WHEN 'weak' THEN 3 WHEN 'no-fit' THEN 4 END ASC",
+    "Fit (weakest)": "CASE quick_fit WHEN 'no-fit' THEN 1 WHEN 'weak' THEN 2 WHEN 'moderate' THEN 3 WHEN 'strong' THEN 4 END ASC",
+    "Decision": "CASE decision WHEN 'pursue' THEN 1 WHEN 'parked' THEN 2 WHEN 'pass' THEN 3 END ASC",
+}
+
+
+def recent_entries(limit: int = 50, order_by: str = "timestamp DESC"):
+    """Fetch recent entries for the sidebar log with configurable sort."""
     db = get_db()
     rows = db.execute(
-        "SELECT id, timestamp, company_name, role_title, quick_fit, decision "
-        "FROM quick_fit_log ORDER BY timestamp DESC LIMIT ?",
+        f"SELECT id, timestamp, source_channel, company_name, role_title, quick_fit, decision "
+        f"FROM quick_fit_log ORDER BY {order_by} LIMIT ?",
         (limit,),
     ).fetchall()
     db.close()
@@ -104,17 +118,35 @@ st.markdown(
 )
 
 # ── Sidebar: recent log ───────────────────────────────────
+SOURCE_EMOJI = {
+    "linkedin": "🔗", "dice": "🎲", "indeed": "📌", "ladders": "🪜",
+    "jobright": "🤖", "jobgether": "🌐", "ziprecruiter": "⚡",
+    "recruiter-outreach": "📞", "referral": "🤝",
+    "go-fractional": "🧩", "nates-network": "🔌", "other": "📋",
+}
+
 with st.sidebar:
-    st.header("📋 Recent Entries")
+    st.header("📋 Quick-Fit Log")
     count = entry_count()
     st.caption(f"{count} total entries")
-    for row in recent_entries(15):
+
+    sort_choice = st.selectbox(
+        "Sort by",
+        list(SORT_COLUMNS.keys()),
+        index=0,
+        key="sidebar_sort",
+    )
+    order_clause = SORT_COLUMNS[sort_choice]
+
+    for row in recent_entries(50, order_by=order_clause):
         fit_icon = QUICK_FIT_EMOJI.get(row["quick_fit"], "")
         dec_icon = DECISION_EMOJI.get(row["decision"], "")
+        src_icon = SOURCE_EMOJI.get(row["source_channel"], "📋")
+        date_str = row["timestamp"][:10] if row["timestamp"] else "—"
         st.markdown(
             f"**{row['company_name']}** — {row['role_title']}  \n"
-            f"{fit_icon} {row['quick_fit']} · {dec_icon} {row['decision']}  \n"
-            f"<small>{row['timestamp'][:16]}</small>",
+            f"{src_icon} {row['source_channel']} · {date_str}  \n"
+            f"{fit_icon} {row['quick_fit']} · {dec_icon} {row['decision']}",
             unsafe_allow_html=True,
         )
         st.divider()
