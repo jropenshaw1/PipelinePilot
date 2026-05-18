@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **OB import summary diagnostics** -- import results now correctly separate duplicates (already imported entries) from parse failures (malformed content). Previously, both were reported as "parse failures" which created misleading error messages when re-importing existing quick-fit entries.
+
+---
+
 ## [0.4.0] -- 2026-05-15
 
 ### Added

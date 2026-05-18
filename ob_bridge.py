@@ -279,17 +279,18 @@ def get_existing_ob_ids(db_path: Path) -> set[str]:
 def import_to_sqlite(
     db_path: Path,
     records: list[dict],
-) -> tuple[int, int, list[str]]:
+) -> tuple[int, int, list[str], list[str]]:
     """
     Import parsed QFL records into SQLite quick_fit_log table.
     Deduplicates by ob_thought_id.
 
-    Returns: (imported_count, skipped_count, error_messages)
+    Returns: (imported_count, skipped_count, error_messages, duplicate_list)
     """
     existing_ids = get_existing_ob_ids(db_path)
     imported = 0
     skipped = 0
     errors = []
+    duplicates = []
 
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -313,6 +314,9 @@ def import_to_sqlite(
         # Dedup check
         if ob_id and ob_id in existing_ids:
             skipped += 1
+            duplicates.append(
+                f"{record.get('company_name', '?')} / {record.get('role_title', '?')}"
+            )
             continue
 
         try:
@@ -335,7 +339,7 @@ def import_to_sqlite(
             )
 
     conn.close()
-    return imported, skipped, errors
+    return imported, skipped, errors, duplicates
 
 
 # ── Top-Level Import Function ──────────────────────────────
@@ -363,6 +367,7 @@ def run_import(
         "skipped": 0,
         "errors": [],
         "parse_failures": [],
+        "duplicates": [],
     }
 
     # Fetch
@@ -400,9 +405,10 @@ def run_import(
         return result
 
     # Import
-    imported, skipped, errors = import_to_sqlite(db_path, records)
+    imported, skipped, errors, duplicates = import_to_sqlite(db_path, records)
     result["imported"] = imported
     result["skipped"] = skipped
     result["errors"] = errors
+    result["duplicates"] = duplicates
 
     return result
