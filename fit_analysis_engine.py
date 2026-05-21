@@ -155,6 +155,8 @@ HARD VOICE BANS — these are enforcement rules, not style suggestions. A violat
 
 5. No em dashes anywhere in the cover letter. Use commas, colons, or new sentences.
 
+6. When referencing the datacenter exit or "10 infrastructure teams" accomplishment, include the full team list parenthetically. The teams are: Network Engineering, Audio/Visual & Telecom, Unix/Linux Engineering, Virtualization Engineering, Database Administration, Storage Administration, Backup Administration, Windows Engineering, Office 365 Administration, Disaster Recovery. Example: "led 10 infrastructure teams (Network Engineering, Audio/Visual & Telecom, Unix/Linux Engineering, Virtualization Engineering, Database Administration, Storage Administration, Backup Administration, Windows Engineering, Office 365 Administration, Disaster Recovery) through the hospitality industry's first complete AWS datacenter exit." This parenthetical provides signal depth and demonstrates the scope of cross-functional leadership.
+
 CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
 Self-check before returning JSON: Scan the generated cover_letter field for the five ban categories above. If any banned phrase, pattern, or em dash appears, rewrite the offending sentence before returning. A banned phrase that survives to the response is a failure of this task.
