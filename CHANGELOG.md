@@ -11,6 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Pursuit Tracker now includes Capturing status** -- Pursuit Tracker previously only queried Analyzing and Pursuing statuses, so newly promoted or manually captured opportunities (which enter as Capturing) were invisible. All three pre-application statuses (Capturing, Analyzing, Pursuing) are now included, matching the intended workflow: every opportunity is tracked from first entry through Applied.
 - **OB import summary diagnostics** -- import results now correctly separate duplicates (already imported entries) from parse failures (malformed content). Previously, both were reported as "parse failures" which created misleading error messages when re-importing existing quick-fit entries.
 
 ---

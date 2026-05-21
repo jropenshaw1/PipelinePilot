@@ -1371,10 +1371,11 @@ class PipelinePilotApp(ctk.CTk):
             self._show_first_launch()
             return
 
-        # Fetch only Pursuing and Analyzing status opportunities
-        pursuing = database.get_all_opportunities(self.db_path, status_filter="Pursuing")
+        # Fetch Capturing, Analyzing, and Pursuing status opportunities
+        capturing = database.get_all_opportunities(self.db_path, status_filter="Capturing")
         analyzing = database.get_all_opportunities(self.db_path, status_filter="Analyzing")
-        opportunities = analyzing + pursuing  # Analyzing first, then Pursuing
+        pursuing = database.get_all_opportunities(self.db_path, status_filter="Pursuing")
+        opportunities = capturing + analyzing + pursuing
 
         outer = ctk.CTkFrame(self.content, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=24, pady=24)
@@ -1400,8 +1401,8 @@ class PipelinePilotApp(ctk.CTk):
         if not opportunities:
             ctk.CTkLabel(
                 list_container,
-                text="No opportunities in Analyzing or Pursuing status.\n"
-                     "Promote a quick-fit entry and run JFA to get started.",
+                text="No opportunities in Capturing, Analyzing, or Pursuing status.\n"
+                     "Capture or promote an opportunity to get started.",
                 text_color=C_MUTED,
                 font=ctk.CTkFont(size=13),
                 justify="center",
