@@ -53,7 +53,7 @@ def _sanitize(text: str) -> str:
 # Config
 # ─────────────────────────────────────────────
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-opus-4-7"
 MAX_TOKENS = 8000
 
 # Stage definitions for the progress dialog.
