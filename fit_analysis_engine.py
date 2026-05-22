@@ -159,7 +159,15 @@ HARD VOICE BANS — these are enforcement rules, not style suggestions. A violat
 
 CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
-Self-check before returning JSON: Scan the generated cover_letter field for the five ban categories above. If any banned phrase, pattern, or em dash appears, rewrite the offending sentence before returning. A banned phrase that survives to the response is a failure of this task.
+Self-check before returning JSON: Scan the generated cover_letter field for violations of bans 1-6 above. Specifically check:
+1. Does the opening sentence contain a fact about the candidate (not "I am writing to express...")?  
+2. Are there any superlative matching phrases ("aligns with," "demonstrates," "uniquely positioned to")?  
+3. Does any sentence speculate about what the company needs or is looking for?  
+4. Does the closing avoid generic promises ("contribute to your growth," "be a valuable addition")?  
+5. Are there any em dashes in the letter?  
+6. If "10 infrastructure teams" or "datacenter exit" appears, does it include the full parenthetical list of teams?
+
+If any violation is found, rewrite the affected sentence before returning the JSON. A violation that survives to the response is a failure of this task.
 
 Candidate contact: If the PERSONAL CONTEXT section below contains contact details (full name,
 email, phone, location, LinkedIn), extract them and populate the candidate_contact object in
