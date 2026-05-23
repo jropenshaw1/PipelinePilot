@@ -18,6 +18,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **_field_option helper** now accepts an optional `on_change` callback, passed through to CTkOptionMenu `command`. Backward compatible (defaults to None).
 - **_refresh_qfl** now passes `show_archived` parameter to `get_quick_fit_entries()` based on archive toggle state.
+- **QFL metrics** now count active entries only (`archived = 0`) for the header total, decision breakdown pills, and fit breakdown.
+- **QFL row text truncation** -- company (24 chars), role (28 chars), and location (20 chars) fields truncate with ellipsis to prevent long entries from pushing action buttons off screen.
+- **QFL archive performance** -- archiving a row now destroys the row widget in-place instead of triggering a full page reload. Confirmation dialog removed for faster batch archiving.
 
 ### Database Migration
 

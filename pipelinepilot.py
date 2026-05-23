@@ -984,20 +984,26 @@ class PipelinePilotApp(ctk.CTk):
         row = ctk.CTkFrame(self._qfl_container, fg_color=C_CARD, corner_radius=8)
         row.pack(fill="x", pady=3)
 
-        # Company
+        # Company (truncate to fit)
+        company = entry.get("company_name", "?")
+        if len(company) > 24:
+            company = company[:22] + "\u2026"
         ctk.CTkLabel(
             row,
-            text=entry.get("company_name", "?"),
+            text=company,
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=C_TEXT,
             width=200,
             anchor="w",
         ).pack(side="left", padx=(12, 4), pady=10)
 
-        # Role
+        # Role (truncate to fit)
+        role = entry.get("role_title", "?")
+        if len(role) > 28:
+            role = role[:26] + "\u2026"
         ctk.CTkLabel(
             row,
-            text=entry.get("role_title", "?"),
+            text=role,
             font=ctk.CTkFont(size=11),
             text_color=C_MUTED,
             width=180,
@@ -1045,10 +1051,13 @@ class PipelinePilotApp(ctk.CTk):
             anchor="w",
         ).pack(side="left", padx=4)
 
-        # Location
+        # Location (truncate to fit)
+        location = entry.get("location_remote_status", "?")
+        if len(location) > 20:
+            location = location[:18] + "\u2026"
         ctk.CTkLabel(
             row,
-            text=entry.get("location_remote_status", "?"),
+            text=location,
             font=ctk.CTkFont(size=11),
             text_color=C_MUTED,
             width=150,
@@ -1086,7 +1095,7 @@ class PipelinePilotApp(ctk.CTk):
             ctk.CTkButton(
                 row,
                 text="\U0001f4e6",
-                command=lambda eid=qfl_id_arch: self._archive_qfl_entry(eid),
+                command=lambda eid=qfl_id_arch, r=row: self._archive_qfl_entry(eid, r),
                 fg_color="transparent",
                 border_color=C_MUTED,
                 border_width=1,
@@ -1197,16 +1206,11 @@ class PipelinePilotApp(ctk.CTk):
             )
         self._refresh_qfl(outer_frame)
 
-    def _archive_qfl_entry(self, qfl_id: int):
-        """Archive a single quick-fit-log entry after confirmation."""
-        if not messagebox.askyesno(
-            "Archive Entry",
-            f"Archive quick-fit entry #{qfl_id}?\n\n"
-            "It will move to the archive view and no longer appear in the active list.",
-        ):
-            return
+    def _archive_qfl_entry(self, qfl_id: int, row_widget=None):
+        """Archive a single quick-fit-log entry. Removes the row in-place without full refresh."""
         database.archive_quick_fit_entry(self.db_path, qfl_id)
-        self._refresh_qfl()
+        if row_widget:
+            row_widget.destroy()
 
     # ── OpenBrain Import ──────────────────────
 
