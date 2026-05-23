@@ -459,20 +459,20 @@ def get_quick_fit_entries(
 
 
 def get_quick_fit_metrics(db_path: Path) -> dict:
-    """Compute quick-fit-log summary metrics."""
+    """Compute quick-fit-log summary metrics (active entries only)."""
     with _connect(db_path) as conn:
         try:
-            total = conn.execute("SELECT COUNT(*) FROM quick_fit_log").fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM quick_fit_log WHERE archived = 0").fetchone()[0]
             by_decision = {}
             rows = conn.execute(
-                "SELECT decision, COUNT(*) as cnt FROM quick_fit_log GROUP BY decision"
+                "SELECT decision, COUNT(*) as cnt FROM quick_fit_log WHERE archived = 0 GROUP BY decision"
             ).fetchall()
             for row in rows:
                 by_decision[row["decision"]] = row["cnt"]
 
             by_fit = {}
             rows = conn.execute(
-                "SELECT quick_fit, COUNT(*) as cnt FROM quick_fit_log GROUP BY quick_fit"
+                "SELECT quick_fit, COUNT(*) as cnt FROM quick_fit_log WHERE archived = 0 GROUP BY quick_fit"
             ).fetchall()
             for row in rows:
                 by_fit[row["quick_fit"]] = row["cnt"]
