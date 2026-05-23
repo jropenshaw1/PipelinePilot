@@ -894,6 +894,9 @@ class PipelinePilotApp(ctk.CTk):
                 text_color="white",
             ).pack(side="left", padx=3)
 
+        # Archive toggle state
+        self._qfl_show_archived = False
+
         # Filter bar
         filter_frame = ctk.CTkFrame(outer, fg_color="transparent")
         filter_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -909,6 +912,21 @@ class PipelinePilotApp(ctk.CTk):
             fg_color=C_CARD,
         ).pack(side="left")
 
+        # Archive toggle button
+        self._qfl_archive_btn = ctk.CTkButton(
+            filter_frame,
+            text="\U0001f4e6 View Archive",
+            command=lambda: self._toggle_qfl_archive(outer),
+            fg_color="transparent",
+            border_color=C_WARNING,
+            border_width=1,
+            text_color=C_WARNING,
+            width=140,
+            height=30,
+            corner_radius=6,
+        )
+        self._qfl_archive_btn.pack(side="right", padx=(12, 0))
+
         # List container
         list_container = ctk.CTkScrollableFrame(outer, fg_color="transparent")
         list_container.grid(row=2, column=0, sticky="nsew")
@@ -920,10 +938,13 @@ class PipelinePilotApp(ctk.CTk):
         self._render_qfl_rows(entries)
 
     def _refresh_qfl(self, outer_frame=None):
-        """Re-render quick-fit-log rows based on filter."""
+        """Re-render quick-fit-log rows based on filter and archive toggle."""
         decision_filter = self._qfl_filter_var.get()
         d = decision_filter if decision_filter != "All" else None
-        entries = database.get_quick_fit_entries(self.db_path, decision_filter=d)
+        show_archived = getattr(self, "_qfl_show_archived", False)
+        entries = database.get_quick_fit_entries(
+            self.db_path, decision_filter=d, show_archived=show_archived
+        )
         for w in self._qfl_container.winfo_children():
             w.destroy()
         self._render_qfl_rows(entries)
@@ -1058,6 +1079,24 @@ class PipelinePilotApp(ctk.CTk):
                 corner_radius=6,
             ).pack(side="left", padx=4)
 
+        # Archive button (only in active view, not archive view)
+        show_archived = getattr(self, "_qfl_show_archived", False)
+        if not show_archived:
+            qfl_id_arch = entry.get("id")
+            ctk.CTkButton(
+                row,
+                text="\U0001f4e6",
+                command=lambda eid=qfl_id_arch: self._archive_qfl_entry(eid),
+                fg_color="transparent",
+                border_color=C_MUTED,
+                border_width=1,
+                text_color=C_MUTED,
+                hover_color=C_WARNING,
+                width=36,
+                height=28,
+                corner_radius=6,
+            ).pack(side="left", padx=4)
+
     # ── Quick-Fit Promotion ───────────────────
 
     def _promote_qfl_entry(self, qfl_id: int):
@@ -1138,6 +1177,36 @@ class PipelinePilotApp(ctk.CTk):
         except Exception as e:
             print(f"[PROMOTE] Exception: {type(e).__name__}: {e}")
             messagebox.showerror("Promotion Failed", f"An error occurred:\n\n{e}")
+
+    # ── Quick-Fit Archive ─────────────────────
+
+    def _toggle_qfl_archive(self, outer_frame):
+        """Toggle between active and archived quick-fit-log views."""
+        self._qfl_show_archived = not self._qfl_show_archived
+        if self._qfl_show_archived:
+            self._qfl_archive_btn.configure(
+                text="\U0001f4cb View Active",
+                border_color=C_BLUE,
+                text_color=C_BLUE,
+            )
+        else:
+            self._qfl_archive_btn.configure(
+                text="\U0001f4e6 View Archive",
+                border_color=C_WARNING,
+                text_color=C_WARNING,
+            )
+        self._refresh_qfl(outer_frame)
+
+    def _archive_qfl_entry(self, qfl_id: int):
+        """Archive a single quick-fit-log entry after confirmation."""
+        if not messagebox.askyesno(
+            "Archive Entry",
+            f"Archive quick-fit entry #{qfl_id}?\n\n"
+            "It will move to the archive view and no longer appear in the active list.",
+        ):
+            return
+        database.archive_quick_fit_entry(self.db_path, qfl_id)
+        self._refresh_qfl()
 
     # ── OpenBrain Import ──────────────────────
 
@@ -1915,7 +1984,8 @@ class DetailWindow(ctk.CTkToplevel):
 
         # ── Status & Dates ──
         self._section(main, "Status & Lifecycle")
-        self._field_option(main, "Status", "status", STATUS_VALUES)
+        self._field_option(main, "Status", "status", STATUS_VALUES,
+                         on_change=self._on_status_change)
         self._field_text(main, "Date Applied", "date_applied", placeholder="YYYY-MM-DD")
         self._field_text(main, "Follow-up Date", "follow_up_date", placeholder="YYYY-MM-DD")
         self._field_text(main, "Interview Date", "interview_date", placeholder="YYYY-MM-DD")
@@ -2070,14 +2140,18 @@ class DetailWindow(ctk.CTkToplevel):
         self._fields[key] = var
         ctk.CTkEntry(parent, textvariable=var, width=460, placeholder_text=placeholder).pack(anchor="w", pady=(2, 8))
 
-    def _field_option(self, parent, label: str, key: str, values: list):
+    def _field_option(self, parent, label: str, key: str, values: list,
+                      on_change=None):
         ctk.CTkLabel(parent, text=label, text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w")
         current = self.opp.get(key) or values[0]
         if current not in values:
             current = values[0]
         var = ctk.StringVar(value=current)
         self._fields[key] = var
-        ctk.CTkOptionMenu(parent, values=values, variable=var, width=240, fg_color=C_CARD).pack(anchor="w", pady=(2, 8))
+        ctk.CTkOptionMenu(
+            parent, values=values, variable=var, width=240, fg_color=C_CARD,
+            command=on_change,
+        ).pack(anchor="w", pady=(2, 8))
 
     def _field_area(self, parent, label: str, key: str, height: int = 80):
         ctk.CTkLabel(parent, text=label, text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w")
@@ -2091,6 +2165,26 @@ class DetailWindow(ctk.CTkToplevel):
         var = ctk.IntVar(value=int(self.opp.get(key) or 0))
         self._fields[key] = var
         ctk.CTkCheckBox(parent, text=label, variable=var, text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(2, 8))
+
+    # ── Status Change Handler ─────────────────
+
+    def _on_status_change(self, new_status: str):
+        """Auto-fill date_applied and follow_up_date when status changes to Applied."""
+        if new_status != "Applied":
+            return
+
+        # Only auto-fill if date_applied is currently empty
+        date_applied_var = self._fields.get("date_applied")
+        if date_applied_var and not date_applied_var.get().strip():
+            today_str = date.today().isoformat()
+            date_applied_var.set(today_str)
+
+            # Also auto-fill follow_up_date if empty
+            follow_up_var = self._fields.get("follow_up_date")
+            if follow_up_var and not follow_up_var.get().strip():
+                offset = self.cfg.get("follow_up_offset_days", 30)
+                follow_up_str = (date.today() + timedelta(days=offset)).isoformat()
+                follow_up_var.set(follow_up_str)
 
     # ── Actions ───────────────────────────────
 

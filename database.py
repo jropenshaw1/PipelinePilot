@@ -141,6 +141,14 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE opportunities ADD COLUMN {col_name} INTEGER NOT NULL DEFAULT 0"
             )
+    
+    # Migration 007: add archived column to quick_fit_log (idempotent — check before ALTER)
+    try:
+        conn.execute("SELECT archived FROM quick_fit_log LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute(
+            "ALTER TABLE quick_fit_log ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def create_opportunity(db_path: Path, record: dict) -> None:
@@ -418,11 +426,20 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
 def get_quick_fit_entries(
     db_path: Path,
     decision_filter: str | None = None,
+    show_archived: bool = False,
     limit: int = 100,
 ) -> list[dict]:
-    """Fetch quick-fit-log entries, optionally filtered by decision."""
+    """Fetch quick-fit-log entries, optionally filtered by decision and archive status."""
     conditions = []
     params = []
+    
+    # Archive filter (default: show only active entries)
+    if show_archived:
+        conditions.append("archived = 1")
+    else:
+        conditions.append("archived = 0")
+    
+    # Decision filter
     if decision_filter and decision_filter != "All":
         conditions.append("decision = ?")
         params.append(decision_filter)
@@ -463,6 +480,16 @@ def get_quick_fit_metrics(db_path: Path) -> dict:
             return {"total": total, "by_decision": by_decision, "by_fit": by_fit}
         except sqlite3.OperationalError:
             return {"total": 0, "by_decision": {}, "by_fit": {}}
+
+
+def archive_quick_fit_entry(db_path: Path, qfl_id: int) -> None:
+    """Archive a quick-fit-log entry (soft delete)."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE quick_fit_log SET archived = 1 WHERE id = ?",
+            (qfl_id,),
+        )
+        conn.commit()
 
 
 # ── Quick-Fit → Pipeline Promotion ────────────────────────

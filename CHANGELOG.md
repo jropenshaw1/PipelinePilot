@@ -9,6 +9,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Quick-Fit Log archive** -- manual archive system for QFL entries. Toggle button ("📦 View Archive" / "📋 View Active") in the filter bar switches between active and archived views. Per-row 📦 button archives individual entries with confirmation dialog. Decision filter works in both views. Archive button only visible in active view.
+- **Auto-fill date fields on status dropdown change** -- selecting "Applied" from the status dropdown in Detail view now instantly populates date_applied (today) and follow_up_date (today + configured offset) on screen, so the user can see and adjust before clicking Save. Only fires when fields are empty; respects manual entries. Existing _save() auto-fill retained as safety net.
+
+### Changed
+
+- **_field_option helper** now accepts an optional `on_change` callback, passed through to CTkOptionMenu `command`. Backward compatible (defaults to None).
+- **_refresh_qfl** now passes `show_archived` parameter to `get_quick_fit_entries()` based on archive toggle state.
+
+### Database Migration
+
+- **Migration 007** (idempotent, inline in `migrate_add_quick_fit_log`): adds `archived INTEGER NOT NULL DEFAULT 0` column to `quick_fit_log` table.
+
 ### Fixed
 
 - **Pursuit Tracker now includes Capturing status** -- Pursuit Tracker previously only queried Analyzing and Pursuing statuses, so newly promoted or manually captured opportunities (which enter as Capturing) were invisible. All three pre-application statuses (Capturing, Analyzing, Pursuing) are now included, matching the intended workflow: every opportunity is tracked from first entry through Applied.
