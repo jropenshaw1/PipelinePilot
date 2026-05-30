@@ -46,9 +46,9 @@ VALID_SOURCE_CHANNELS = {
     "linkedin", "jobright", "indeed", "ladders",
     "dice", "jobgether", "ziprecruiter",
     "recruiter-outreach", "referral",
-    "go-fractional", "nates-network", "other",
+    "go-fractional", "nates-network", "company-site", "other",
 }
-VALID_ROLE_LEVELS = {"VP", "Sr. Director", "Director", "below-target"}
+VALID_ROLE_LEVELS = {"VP", "Sr. Director", "Director", "Sr. Manager", "below-target"}
 VALID_OPP_TYPES = {"job", "fractional", "advisory", "exploratory"}
 VALID_QUICK_FIT = {"strong", "moderate", "weak", "no-fit"}
 VALID_DECISIONS = {"pursue", "pass", "parked"}

@@ -150,6 +150,16 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
             "ALTER TABLE quick_fit_log ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
         )
 
+    # Migration 008: add Sr. Manager to role_level enum, company-site to source_channel
+    # Idempotent: check if CHECK constraint already includes 'Sr. Manager'
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='quick_fit_log'"
+    ).fetchone()
+    if table_sql and "Sr. Manager" not in (table_sql[0] or ""):
+        migration_008 = Path(__file__).parent / "migrations" / "008_add_sr_manager_role_level.sql"
+        if migration_008.exists():
+            conn.executescript(migration_008.read_text())
+
 
 def create_opportunity(db_path: Path, record: dict) -> None:
     """FR-06: Create record simultaneously with folder creation."""
