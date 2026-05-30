@@ -21,10 +21,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **QFL metrics** now count active entries only (`archived = 0`) for the header total, decision breakdown pills, and fit breakdown.
 - **QFL row text truncation** -- company (24 chars), role (28 chars), and location (20 chars) fields truncate with ellipsis to prevent long entries from pushing action buttons off screen.
 - **QFL archive performance** -- archiving a row now destroys the row widget in-place instead of triggering a full page reload. Confirmation dialog removed for faster batch archiving.
+- **ob_bridge.py enum sync** -- `VALID_ROLE_LEVELS` now includes `Sr. Manager`; `VALID_SOURCE_CHANNELS` now includes `company-site`. Aligns parser validation with quick-fit skill v1.3.1 and migration 008 CHECK constraints.
 
 ### Database Migration
 
 - **Migration 007** (idempotent, inline in `migrate_add_quick_fit_log`): adds `archived INTEGER NOT NULL DEFAULT 0` column to `quick_fit_log` table.
+- **Migration 008** (idempotent, inline in `migrate_add_quick_fit_log`): table rebuild adding `Sr. Manager` to `role_level` CHECK constraint and `company-site` to `source_channel` CHECK constraint. Root cause: May 2026 job search scope expansion to include Sr. Manager roles was not reflected in the schema enum, causing 8 OB import parse failures in a single QF batch session.
 
 ### Fixed
 
