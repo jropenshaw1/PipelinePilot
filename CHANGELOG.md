@@ -22,6 +22,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **QFL row text truncation** -- company (24 chars), role (28 chars), and location (20 chars) fields truncate with ellipsis to prevent long entries from pushing action buttons off screen.
 - **QFL archive performance** -- archiving a row now destroys the row widget in-place instead of triggering a full page reload. Confirmation dialog removed for faster batch archiving.
 - **ob_bridge.py enum sync** -- `VALID_ROLE_LEVELS` now includes `Sr. Manager`; `VALID_SOURCE_CHANNELS` now includes `company-site`. Aligns parser validation with quick-fit skill v1.3.1 and migration 008 CHECK constraints.
+- **ob_bridge.py alias normalization** -- `parse_qfl_block` now normalizes known AI-generated enum variants before validation via `PASS_REASON_ALIASES` and `ROLE_LEVEL_ALIASES` maps. Aliases like `domain-mismatch` → `wrong-domain`, `Senior Manager` → `Sr. Manager`, etc. are resolved with info-level logging. Unknown values still fail validation. Root cause: AI agents generating close-but-wrong enum values (e.g. `domain-mismatch` instead of `wrong-domain`) caused silent parse failures on OB import.
+- **quick_fit_capture.py enum sync** -- `ROLE_LEVELS` now includes `Sr. Manager`; `SOURCE_CHANNELS` now includes `company-site`. Aligns Streamlit capture form with ob_bridge and migration 008 CHECK constraints.
 
 ### Database Migration
 

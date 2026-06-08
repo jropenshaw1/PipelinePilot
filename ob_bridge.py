@@ -59,6 +59,28 @@ VALID_PASS_REASONS = {
     "timing", "other",
 }
 
+# ── Alias Maps ─────────────────────────────────────────────
+# AI agents sometimes generate close-but-wrong enum values.
+# Normalize known aliases to canonical values rather than rejecting.
+PASS_REASON_ALIASES = {
+    "domain-mismatch": "wrong-domain",
+    "level-mismatch": "wrong-level",
+    "comp-signal": "compensation-signal",
+    "comp-below": "compensation-signal",
+    "no-degree": "degree-required",
+    "no-cert": "cert-required",
+    "location": "location-mismatch",
+    "domain": "wrong-domain",
+    "level": "wrong-level",
+}
+
+ROLE_LEVEL_ALIASES = {
+    "Senior Manager": "Sr. Manager",
+    "Sr Manager": "Sr. Manager",
+    "Senior Director": "Sr. Director",
+    "Sr Director": "Sr. Director",
+}
+
 
 def parse_qfl_block(content: str) -> Optional[dict]:
     """
@@ -91,6 +113,17 @@ def parse_qfl_block(content: str) -> Optional[dict]:
     if missing:
         logger.warning(f"QFL block missing required fields: {missing}")
         return None
+
+    # ── Normalize aliases before validation ────────────────
+    rl = fields.get("role_level", "")
+    if rl not in VALID_ROLE_LEVELS and rl in ROLE_LEVEL_ALIASES:
+        fields["role_level"] = ROLE_LEVEL_ALIASES[rl]
+        logger.info(f"Normalized role_level alias: {rl!r} → {fields['role_level']!r}")
+
+    pr = fields.get("primary_pass_reason", "")
+    if pr and pr not in VALID_PASS_REASONS and pr in PASS_REASON_ALIASES:
+        fields["primary_pass_reason"] = PASS_REASON_ALIASES[pr]
+        logger.info(f"Normalized pass_reason alias: {pr!r} → {fields['primary_pass_reason']!r}")
 
     # Validate enum values
     if fields.get("source_channel") not in VALID_SOURCE_CHANNELS:

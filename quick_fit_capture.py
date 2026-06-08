@@ -18,10 +18,10 @@ SOURCE_CHANNELS = [
     "linkedin", "jobright", "indeed", "ladders",
     "dice", "jobgether", "ziprecruiter",
     "recruiter-outreach", "referral",
-    "go-fractional", "nates-network", "other",
+    "go-fractional", "nates-network", "company-site", "other",
 ]
 
-ROLE_LEVELS = ["VP", "Sr. Director", "Director", "below-target"]
+ROLE_LEVELS = ["VP", "Sr. Director", "Director", "Sr. Manager", "below-target"]
 
 OPPORTUNITY_TYPES = ["job", "fractional", "advisory", "exploratory"]
 
