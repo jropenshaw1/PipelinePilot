@@ -1,9 +1,9 @@
 # AGENTS.md — PipelinePilot
 
-## Source Of Authority
-- Follow  `docs/governance.md` as inherited operating governance.
-- If this file conflicts with `governance.md`, governance wins.
-- This is a public repo; preserve the public/private boundary and secrets-by-reference rule.
+## Source of Authority
+- This project is governed by the jonathan-ops governance framework, delivered automatically via the `jonathan-governance` Codex skill. Project-specific rules below supplement, never override, the governance framework.
+- If this file conflicts with governance, governance wins.
+- This is a public repo; the public/private boundary and secrets-by-reference rule from the governance framework apply.
 
 ## Project Shape
 - PipelinePilot is a single-user Python desktop app for job-search pipeline management.
