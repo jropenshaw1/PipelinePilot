@@ -71,6 +71,7 @@ These govern how you interact, not just what you build.
 - `database.py` — schema definitions and all database operations (opportunities, interviews, quick_fit_log)
 - `models.py` — constants: STATUS_VALUES, SOURCE_VALUES, LOCATION_TYPES, LAST_COMM_TYPES, OB config keys
 - `ob_bridge.py` — OpenBrain Supabase fetch, `[quick-fit-log]` block parser, SQLite import with dedup
+- `mcp_server/` — local stdio MCP thin wrapper using config-based DB resolution; SQL tracing logs to stderr so stdout remains protocol-clean
 - `fit_analysis_engine.py` — AI fit scoring logic, do not modify without explicit instruction
 - `quick_fit_capture.py` — Streamlit-based manual capture form (standalone, not part of desktop app)
 - `migrations/` — SQL migration files (001: quick_fit_log table, 002: ob_thought_id column)

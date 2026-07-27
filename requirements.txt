@@ -17,6 +17,9 @@ anthropic>=0.40.0
 # OpenBrain bridge — Supabase REST API
 requests>=2.31.0
 
+# Local stdio MCP server
+mcp>=1.0.0
+
 # Standard library (no install needed on Windows — listed for documentation)
 # copy
 # datetime
