@@ -31,7 +31,7 @@ mcp = FastMCP("PipelinePilot")
 
 
 @mcp.tool()
-def pipi_query_pipeline(status_filter: str | None = None, include_archived: bool = False,
+def pipi_query_pipeline(status_filter: str | list[str] | None = None, include_archived: bool = False,
                         sort_by: str | None = None) -> object:
     """List opportunities, optionally filtering by status and archive state."""
     return tools.query_pipeline(status_filter, include_archived, sort_by)
@@ -88,10 +88,10 @@ def pipi_update_contact(folder_name: str, contact_name: str | None = None,
 
 
 @mcp.tool()
-def pipi_close_opportunity(folder_name: str, status: str, communication_notes: str | None = None,
-                           ghosted: bool = False) -> object:
-    """Set a terminal status and optionally record a dated GHOSTED entry."""
-    return tools.close_opportunity(folder_name, status, communication_notes, ghosted)
+def pipi_close_opportunity(folder_name: str, status: str,
+                           communication_notes: str | None = None) -> object:
+    """Set a terminal status and optionally record communication notes."""
+    return tools.close_opportunity(folder_name, status, communication_notes)
 
 
 @mcp.tool()
@@ -102,13 +102,13 @@ def pipi_archive_opportunity(folder_name: str) -> object:
 
 @mcp.tool()
 def pipi_mark_applied(folder_name: str, date_applied: str, job_url: str | None = None) -> object:
-    """Mark an opportunity Applied; database.py supplies its existing follow-up offset."""
+    """Mark an opportunity Applied and schedule its configured Monday follow-up."""
     return tools.mark_applied(folder_name, date_applied, job_url)
 
 
 @mcp.tool()
 def pipi_log_still_posted(folder_name: str) -> object:
-    """Append today's STILL POSTED entry and set follow-up to today plus seven days."""
+    """Append today's STILL POSTED entry and set follow-up to next Monday."""
     return tools.log_still_posted(folder_name)
 
 

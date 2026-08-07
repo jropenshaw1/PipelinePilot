@@ -13,11 +13,12 @@ STATUS_VALUES = [
     "Interviewing",
     "Offer",
     "Closed",
+    "Ghosted",
     "Rejected",
 ]
 
 # Terminal statuses — no further progression expected
-TERMINAL_STATUSES = ["Passed", "Offer", "Closed", "Rejected"]
+TERMINAL_STATUSES = ["Passed", "Offer", "Closed", "Ghosted", "Rejected"]
 
 # Approved source values (data dictionary §5.1)
 SOURCE_VALUES = [
@@ -64,7 +65,7 @@ CLOUD_SYNC_INDICATORS = [
 
 # Default configuration values (FR-31, FR-32)
 DEFAULT_FIT_THRESHOLD = 0.65
-DEFAULT_FOLLOW_UP_OFFSET_DAYS = 30
+DEFAULT_FOLLOW_UP_OFFSET_DAYS = 14
 
 # Application metadata
 APP_NAME = "PipelinePilot"

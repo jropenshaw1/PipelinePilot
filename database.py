@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     communication_notes     TEXT,
     follow_up_date          DATE,
     action_items            TEXT,
+    posting_status_log      TEXT,
     interview_date          DATE,
     interview_notes         TEXT,
     date_created            DATE NOT NULL,
@@ -88,6 +89,16 @@ def migrate_add_interviews_table(conn: sqlite3.Connection) -> None:
         conn.executescript(INTERVIEWS_SCHEMA)
 
 
+def migrate_add_posting_status_log(conn: sqlite3.Connection) -> None:
+    """Idempotently add the posting lifecycle log to existing databases."""
+    try:
+        conn.execute("SELECT posting_status_log FROM opportunities LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute(
+            "ALTER TABLE opportunities ADD COLUMN posting_status_log TEXT"
+        )
+
+
 def get_db_path(job_search_root: str) -> Path:
     return Path(job_search_root) / DB_FILENAME
 
@@ -103,6 +114,7 @@ def initialize_database(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.execute(SCHEMA)
         migrate_add_interviews_table(conn)
+        migrate_add_posting_status_log(conn)
         migrate_add_quick_fit_log(conn)
         conn.commit()
 
@@ -192,7 +204,7 @@ DEFAULT_SORT = "Newest First"
 def get_all_opportunities(
     db_path: Path,
     include_archived: bool = False,
-    status_filter: str | None = None,
+    status_filter: str | list[str] | None = None,
     sort_by: str | None = None,
 ) -> list[dict]:
     """FR-07: Return all opportunity records, optionally filtered and sorted."""
@@ -201,8 +213,11 @@ def get_all_opportunities(
     if not include_archived:
         conditions.append("archived = 0")
     if status_filter:
-        conditions.append("status = ?")
-        params.append(status_filter)
+        if isinstance(status_filter, str):
+            status_filter = [status_filter]
+        placeholders = ", ".join(["?" for _ in status_filter])
+        conditions.append(f"status IN ({placeholders})")
+        params.extend(status_filter)
     sql = "SELECT * FROM opportunities"
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
@@ -222,7 +237,20 @@ def get_opportunity(db_path: Path, folder_name: str) -> dict | None:
     return dict(row) if row else None
 
 
-def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
+def next_monday(reference_date: date) -> date:
+    """Return the next Monday strictly after reference_date."""
+    days_ahead = 7 - reference_date.weekday()
+    if days_ahead == 7:
+        days_ahead = 7
+    return reference_date + timedelta(days=days_ahead)
+
+
+def update_opportunity(
+    db_path: Path,
+    folder_name: str,
+    updates: dict,
+    follow_up_offset_days: int = DEFAULT_FOLLOW_UP_OFFSET_DAYS,
+) -> None:
     """FR-10: Update fields and auto-set date_modified. FR-18: Auto follow_up_date."""
     updates = dict(updates)
     updates["date_modified"] = date.today().isoformat()
@@ -230,9 +258,10 @@ def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
     if updates.get("status") == "Applied" and updates.get("date_applied"):
         if not updates.get("follow_up_date"):
             applied = date.fromisoformat(updates["date_applied"])
+            raw_followup = applied + timedelta(days=follow_up_offset_days)
             updates.setdefault(
                 "follow_up_date",
-                (applied + timedelta(days=DEFAULT_FOLLOW_UP_OFFSET_DAYS)).isoformat(),
+                next_monday(raw_followup).isoformat(),
             )
 
     set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
@@ -284,7 +313,7 @@ def get_dashboard_metrics(db_path: Path) -> dict:
             "WHERE follow_up_date IS NOT NULL "
             "AND follow_up_date <= ? "
             "AND archived = 0 "
-            "AND status NOT IN ('Passed','Offer','Closed','Rejected')",
+            "AND status NOT IN ('Passed','Offer','Closed','Ghosted','Rejected')",
             (today,),
         ).fetchone()[0]
 
@@ -302,7 +331,7 @@ _FOLLOWUPS_DUE_WHERE = (
     "follow_up_date IS NOT NULL "
     "AND follow_up_date <= ? "
     "AND archived = 0 "
-    "AND status NOT IN ('Passed','Offer','Closed','Rejected')"
+    "AND status NOT IN ('Passed','Offer','Closed','Ghosted','Rejected')"
 )
 
 

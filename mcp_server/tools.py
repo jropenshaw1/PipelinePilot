@@ -12,14 +12,19 @@ from __future__ import annotations
 import sqlite3
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 import database
 import ob_bridge
 from config import CONFIG_PATH
-from models import LAST_COMM_TYPES, STATUS_VALUES, TERMINAL_STATUSES
+from models import (
+    DEFAULT_FOLLOW_UP_OFFSET_DAYS,
+    LAST_COMM_TYPES,
+    STATUS_VALUES,
+    TERMINAL_STATUSES,
+)
 
 
 INTERVIEW_TYPES = (
@@ -134,11 +139,16 @@ class PipelinePilotTools:
     def _is_error(result: object) -> bool:
         return isinstance(result, dict) and "error" in result
 
-    def query_pipeline(self, status_filter: str | None = None, include_archived: bool = False,
+    def query_pipeline(self, status_filter: str | list[str] | None = None, include_archived: bool = False,
                        sort_by: str | None = None) -> Any:
         def operation() -> Any:
-            if status_filter is not None and status_filter not in STATUS_VALUES:
-                raise ValueError(f"status_filter must be one of: {', '.join(STATUS_VALUES)}")
+            if status_filter is not None:
+                filters = [status_filter] if isinstance(status_filter, str) else status_filter
+                for status in filters:
+                    if status not in STATUS_VALUES:
+                        raise ValueError(
+                            f"Invalid status '{status}'. Must be one of: {', '.join(STATUS_VALUES)}"
+                        )
             return database.get_all_opportunities(self.db_path, include_archived, status_filter, sort_by)
         return self._run(operation)
 
@@ -222,19 +232,22 @@ class PipelinePilotTools:
             return database.get_opportunity(self.db_path, folder_name)
         return self._run(operation)
 
-    def close_opportunity(self, folder_name: str, status: str, communication_notes: str | None = None,
-                          ghosted: bool = False) -> Any:
+    def close_opportunity(self, folder_name: str, status: str,
+                          communication_notes: str | None = None) -> Any:
         def operation() -> Any:
             if status not in TERMINAL_STATUSES:
                 raise ValueError(f"status must be one of terminal statuses: {', '.join(TERMINAL_STATUSES)}")
             opportunity = self._opportunity(folder_name)
             if self._is_error(opportunity):
                 return opportunity
-            updates: dict[str, Any] = {"status": "Closed" if ghosted else status}
+            updates: dict[str, Any] = {"status": status}
             if communication_notes is not None:
                 updates["communication_notes"] = _append_text(opportunity.get("communication_notes"), communication_notes)
-            if ghosted:
-                updates["action_items"] = _append_text(opportunity.get("action_items"), f"GHOSTED: {date.today().isoformat()}")
+            if status == "Ghosted":
+                updates["posting_status_log"] = _append_text(
+                    opportunity.get("posting_status_log"),
+                    f"NOT POSTED: {date.today().isoformat()}",
+                )
             database.update_opportunity(self.db_path, folder_name, updates)
             return database.get_opportunity(self.db_path, folder_name)
         return self._run(operation)
@@ -259,7 +272,15 @@ class PipelinePilotTools:
             updates: dict[str, Any] = {"status": "Applied", "date_applied": date_applied}
             if job_url is not None:
                 updates["job_url"] = job_url
-            database.update_opportunity(self.db_path, folder_name, updates)
+            offset = self.config.get(
+                "follow_up_offset_days", DEFAULT_FOLLOW_UP_OFFSET_DAYS
+            )
+            database.update_opportunity(
+                self.db_path,
+                folder_name,
+                updates,
+                follow_up_offset_days=offset,
+            )
             return database.get_opportunity(self.db_path, folder_name)
         return self._run(operation)
 
@@ -269,14 +290,19 @@ class PipelinePilotTools:
             if self._is_error(opportunity):
                 return opportunity
             today = date.today()
-            existing = opportunity.get("action_items") or ""
+            existing = opportunity.get("posting_status_log") or ""
             if "STILL POSTED:" in existing:
-                action_items = f"{existing.rstrip()}\n{today.isoformat()}"
+                lines = existing.split("\n")
+                for index, line in enumerate(lines):
+                    if line.startswith("STILL POSTED:"):
+                        lines[index] = f"{line.rstrip()} | {today.isoformat()}"
+                        break
+                posting_status_log = "\n".join(lines)
             else:
-                action_items = _append_text(existing, f"STILL POSTED:\n{today.isoformat()}")
+                posting_status_log = f"STILL POSTED: {today.isoformat()}"
             database.update_opportunity(self.db_path, folder_name, {
-                "action_items": action_items,
-                "follow_up_date": (today + timedelta(days=7)).isoformat(),
+                "posting_status_log": posting_status_log,
+                "follow_up_date": database.next_monday(today).isoformat(),
             })
             return database.get_opportunity(self.db_path, folder_name)
         return self._run(operation)
