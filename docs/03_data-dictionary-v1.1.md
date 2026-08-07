@@ -1,9 +1,13 @@
 # PipelinePilot — Data Dictionary
 
-**Version:** 1.0  
-**Date:** March 7, 2026  
+**Version:** 1.1  
+**Date:** August 7, 2026  
 **Author:** Jonathan Openshaw  
 **Status:** Approved
+
+**Change Log:**
+- **v1.0** (March 7, 2026) — Initial release
+- **v1.1** (August 7, 2026) — Added `posting_status_log` field (ADR-009). Restored `action_items` to task-only scope (ADR-009). Added "Ghosted" to status lifecycle (ADR-009). Corrected follow-up offset to 14 days with Monday-snap behavior (ADR-010). Added multi-select status filtering (ADR-011). Pursuit tracker columns (`cl_reviewed`, `resume_reviewed`, `jfa_completed`) documented (previously added via migration 006 without Data Dictionary update).
 
 ---
 
@@ -51,7 +55,7 @@ Each `Company_Role` folder is expected to contain the following files:
 
 | Filename | Type | Created By | Required | Description |
 |---|---|---|---|---|
-| `JD_Company_Role.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details. Filename = `JD_` + `folder_name` + `.docx`. No separate sanitization — folder_name is already clean. Example: folder `CambridgeInvestmentResearch_VPITInfrastructureOperations` → `JD_CambridgeInvestmentResearch_VPITInfrastructureOperations.docx` |
+| `JD_Company_Role.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details. Filename = `JD_` + `folder_name` + `.docx`. No separate sanitization — folder_name is already clean. |
 | `fit_analysis.md` | Markdown + YAML | Job Fit Analyst skill | No (required for fit indexing) | YAML front-matter metadata + narrative analysis |
 | `fit_analysis.docx` | Word document | Job Fit Analyst skill | No | Human-readable fit analysis for review and demos |
 | `Resume_CompanyName_RoleTitle.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role |
@@ -96,7 +100,7 @@ top_gaps:                 # List of 2–5 strings
 | `folder_name` | TEXT | NOT NULL | — | Primary key. Auto-generated from company_name + role_title. Filesystem anchor. |
 | `company_name` | TEXT | NOT NULL | — | Human-readable company name as entered by User |
 | `role_title` | TEXT | NOT NULL | — | Human-readable role title as entered by User |
-| `job_url` | TEXT | NULL | — | URL to original job posting |
+| `job_url` | TEXT | NOT NULL | — | URL to original job posting. **Required at capture.** (v1.1: enforcement added at quick-fit and capture entry points) |
 | `source` | TEXT | NULL | — | Source board: LinkedIn / Indeed / Monster / Dice / Lensa / Ladders / Recruiter / Company Direct / Other |
 | `source_other` | TEXT | NULL | — | Free-text clarification when source = "Other" (e.g., "Mary Beth") |
 | `date_discovered` | DATE | NOT NULL | Current date | Auto-set when record is created |
@@ -120,7 +124,7 @@ top_gaps:                 # List of 2–5 strings
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| `status` | TEXT | NOT NULL | "New" | Lifecycle status: New / Capturing / Analyzing / Pursuing / Passed / Applied / In Review / Interviewing / Offer / Closed / Rejected |
+| `status` | TEXT | NOT NULL | "New" | Lifecycle status: New / Capturing / Analyzing / Pursuing / Passed / Applied / In Review / Interviewing / Offer / Closed / Ghosted / Rejected |
 | `date_applied` | DATE | NULL | — | Date application submitted |
 | `confirmation_email` | TEXT | NULL | — | Paste area for confirmation email text content |
 | `contact_name` | TEXT | NULL | — | Recruiter or hiring manager name |
@@ -134,16 +138,25 @@ top_gaps:                 # List of 2–5 strings
 | `last_communication_type` | TEXT | NULL | — | Acknowledgment / Rejection / Phone Screen Request / Interview Request / Offer / Other |
 | `communication_notes` | TEXT | NULL | — | Running log of employer touchpoints. Each entry prefixed with date. |
 
-### 5.5 Follow-up & Action Items Fields
+### 5.5 Follow-up, Action Items & Posting Status Fields
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| `follow_up_date` | DATE | NULL | — | Auto-set to date_applied + 14 days; User-editable |
-| `action_items` | TEXT | NULL | — | Free-text per-role task list: research, training, prep |
+| `follow_up_date` | DATE | NULL | — | Auto-set to next Monday on or after (`date_applied` + `follow_up_offset_days`). Config-driven; default offset is 14 days. All follow-up dates snap to Monday. See ADR-010. |
+| `action_items` | TEXT | NULL | — | **Pending human tasks only.** Things the user still needs to do: "Check LinkedIn connection status", "Send thank-you note", "Review benefits package". If nothing is pending, this field is empty. STILL POSTED dates, GHOSTED markers, communication history, and one-time observations do not belong here. See ADR-009. |
+| `posting_status_log` | TEXT | NULL | — | **Machine-maintained posting lifecycle data.** Written exclusively by `pipi_log_still_posted` and `pipi_close_opportunity`. Not a free-text field for human notes. Format: `STILL POSTED: YYYY-MM-DD \| YYYY-MM-DD \| ...` on one line, `NOT POSTED: YYYY-MM-DD` on a separate line when posting disappearance is confirmed. All dates ISO 8601. See ADR-009. |
 | `interview_date` | DATE | NULL | — | Scheduled interview date and time |
 | `interview_notes` | TEXT | NULL | — | Pre- and post-interview notes |
 
-### 5.6 Housekeeping Fields
+### 5.6 Pursuit Tracker Fields
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `cl_reviewed` | INTEGER | NOT NULL | 0 | Boolean (0/1). Cover letter reviewed and finalized for this opportunity. |
+| `resume_reviewed` | INTEGER | NOT NULL | 0 | Boolean (0/1). Tailored resume reviewed and finalized for this opportunity. |
+| `jfa_completed` | INTEGER | NOT NULL | 0 | Boolean (0/1). Full Job Fit Analyst run completed for this opportunity. |
+
+### 5.7 Housekeeping Fields
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
@@ -161,9 +174,12 @@ New → Capturing → Analyzing → Pursuing → Applied → In Review → Inter
                                      Passed                                    Closed
                                                                                   ↑
                                                               Rejected ←──────────┘
+                                                              Ghosted  ←──────────┘
 ```
 
-**Terminal statuses:** Passed / Offer / Closed / Rejected
+**Terminal statuses:** Passed / Offer / Closed / Ghosted / Rejected
+
+**Ghosted** (v1.1): Indicates no employer response despite confirmed application and active posting tracking. Distinct from Closed (user-initiated withdrawal or posting removed without tracking) and Rejected (explicit employer communication declining the candidate). Supports post-mortem analytics: ghost rate by company, time to ghost, posting duration before disappearance.
 
 ---
 
@@ -174,14 +190,16 @@ New → Capturing → Analyzing → Pursuing → Applied → In Review → Inter
 | `company_name` | Required. Min 2 chars. Max 40 chars. Alphanumeric + spaces + hyphens only after sanitization. |
 | `role_title` | Required. Min 2 chars. Max 40 chars. Same sanitization rules. |
 | `folder_name` | Auto-generated. Max 60 chars combined. Preview required before creation. |
+| `job_url` | Required at capture. Must be a valid URL string. |
 | `fit_score` | Float 0.00–1.00. Null if analysis not yet run. |
 | `fit_threshold` | Float 0.00–1.00. Default 0.65. Configurable in settings. |
 | `source` | Must be from approved list. If "Other" selected, `source_other` required. |
-| `status` | Must be from approved list. |
+| `status` | Must be from approved list. Filtering accepts single value or list of values (ADR-011). |
 | `location_type` | Must be from approved list if populated. |
 | `date_applied` | Cannot precede `date_discovered`. |
-| `follow_up_date` | Cannot precede `date_applied` if both are set. |
+| `follow_up_date` | Cannot precede `date_applied` if both are set. Always a Monday. |
+| `posting_status_log` | Machine-written only. Dates must be ISO 8601 (YYYY-MM-DD). |
 
 ---
 
-*This data dictionary was produced from a structured requirements interview conducted March 7, 2026, and incorporates architectural decisions from ChatGPT and Claude sessions captured in OpenBrain.*
+*Data Dictionary v1.1 produced August 7, 2026. Changes driven by ADR-009, ADR-010, and ADR-011. Incorporates field additions from migration 006 (pursuit tracker columns) that were previously undocumented.*

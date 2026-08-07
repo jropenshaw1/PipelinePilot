@@ -1,10 +1,14 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
 **Version:** 1.1
-**Date:** March 12, 2026
+**Date:** August 7, 2026
 **Author:** Jonathan Openshaw
 **Standard:** Michael Nygard ADR Format
 **Status:** Approved
+
+**Change Log:**
+- **v1.0** (March 7–12, 2026) — ADR-001 through ADR-008
+- **v1.1** (August 7, 2026) — ADR-009 (Posting Status Log, Action Items Scope, Ghosted Status), ADR-010 (Follow-Up Date Standardization), ADR-011 (Multi-Select Status Filtering)
 
 ---
 
@@ -156,6 +160,8 @@ No automated email processing. Email content is captured manually via paste-into
 - No automatic detection of new employer communications
 - Future enhancement path exists if User finds manual capture too burdensome
 
+**Note (August 7, 2026):** The follow-up maintenance skill (Layer 3) uses Gmail MCP to *search* for employer communications during maintenance sessions and surface them for user review. This is consistent with ADR-005 — the skill reads Gmail as a signal source during an interactive session; it does not automatically process, capture, or act on emails without user direction.
+
 ---
 
 ## ADR-006: Reference and Index, Not Reinterpret
@@ -254,5 +260,144 @@ The core architectural principle from ADR-006 is preserved: one authoritative AI
 
 ---
 
+## ADR-009: Posting Status Log, Action Items Scope Correction, and Ghosted Status
+
+**Date:** August 7, 2026
+**Status:** Accepted
+**Supersedes:** Portions of PRD v1.3 §7.1 (action_items append behavior)
+
+### Context
+
+The `action_items` field was defined in Data Dictionary v1.0 §5.5 as: *"Free-text per-role task list: research, training, prep."* In practice, the field accumulated five distinct categories of data:
+
+1. **STILL POSTED date trails** — posting verification timestamps (15+ records)
+2. **GHOSTED markers** — terminal status indicators with dates (20+ records)
+3. **Communication history** — LinkedIn messages, email exchanges (10+ records, duplicating `communication_notes`)
+4. **One-time observations** — "Degree required", "Application lost in shuffle" (10+ records)
+5. **Pending tasks** — the only content matching the Data Dictionary definition (3 records)
+
+Analysis of all 62 populated `action_items` records across 197 opportunities confirmed that Category 5 (actual action items) represented less than 5% of the field's content. The scope creep was formalized in PRD v1.3 §7.1, which codified `pipi_log_still_posted` and `pipi_close_opportunity` (ghosted=true) appending structured data to `action_items` because no dedicated field existed at build time.
+
+Separately, "Ghosted" was tracked as a text marker (`"GHOSTED: YYYY-MM-DD"`) appended to a free-text field rather than as a first-class lifecycle status. This required text parsing to identify ghosted opportunities, prevented dashboard reporting by closure reason, and created a dependency between status determination and free-text field content.
+
+### Decision
+
+**1. Add `posting_status_log` field.** A new TEXT column in the `opportunities` table. Machine-maintained — written exclusively by `pipi_log_still_posted` and `pipi_close_opportunity`. Not a free-text field for human notes. Format: `STILL POSTED: YYYY-MM-DD | YYYY-MM-DD | ...` on one line, `NOT POSTED: YYYY-MM-DD` on a separate line when posting disappearance is confirmed. All dates ISO 8601.
+
+**2. Restore `action_items` to its Data Dictionary definition.** Pending human tasks only. STILL POSTED dates, GHOSTED markers, communication history, and one-time observations do not belong here.
+
+**3. Add "Ghosted" as a first-class terminal status.** `STATUS_VALUES` gains "Ghosted". `TERMINAL_STATUSES` gains "Ghosted" alongside Passed, Offer, Closed, and Rejected. The `ghosted` boolean parameter on `pipi_close_opportunity` is removed — the full interface is `pipi_close_opportunity(folder_name, status="Ghosted")`.
+
+### Rationale
+
+- Single-purpose fields are queryable, parseable, and governable. A junk-drawer field requires text parsing and heuristics to extract meaning.
+- The follow-up maintenance skill (Layer 3) is the primary consumer of posting status data. Building it against a mixed-content free-text field would inherit the mess.
+- Ghosted is a distinct closure reason with different implications than Rejected or Closed. Dashboard metrics can now report these as distinct categories without text parsing.
+- `pipi_close_opportunity` simplifies: one parameter removed, one code path eliminated.
+
+### Consequences
+
+- Migration required: STILL POSTED dates and GHOSTED markers in existing `action_items` records must be relocated to `posting_status_log` and status field respectively. All dates normalized to ISO 8601.
+- `pipi_log_still_posted` in `tools.py` writes to `posting_status_log` instead of `action_items`.
+- `pipi_close_opportunity` in `tools.py` drops the `ghosted` boolean parameter. When `status="Ghosted"`, appends `NOT POSTED: YYYY-MM-DD` to `posting_status_log`.
+- PRD v1.3 §7.1 is superseded by PRD v1.4.
+- Data Dictionary v1.0 §5.5 is superseded by Data Dictionary v1.1.
+- Quick-fit status-update path must recognize "Ghosted" as a valid terminal status.
+- Future analytics enabled: time from application to ghost, posting duration, ghost rate by company/industry.
+
+---
+
+## ADR-010: Follow-Up Date Standardization — Config-Driven Offset with Monday Snap
+
+**Date:** August 7, 2026
+**Status:** Accepted
+**Resolves:** PRD v1.3 §7.3 Known Inconsistency
+
+### Context
+
+Follow-up date calculation had three inconsistencies documented across the codebase:
+
+| Source | Stated Offset | Actually Used |
+|---|---|---|
+| Data Dictionary v1.0 §5.5 | 14 days | No — documentation only |
+| Process Flow v1.0, Stage 4 | 14 days | No — documentation only |
+| Definition of Done v1.0 §2 | 14 days (default) | No — documentation only |
+| `models.py` constant | 30 days | Yes — imported directly by `database.py` |
+| `config.py` / `pipelinepilot.config` | 30 days | No — config key exists but `database.py` imports the constant instead |
+| `tools.py` `log_still_posted()` | 7 days | Yes — hardcoded `timedelta(days=7)` |
+
+Three different numbers in play (14, 30, 7), two hardcoded, and the one configurable path never read by the code that sets follow-up dates.
+
+Separately, follow-up dates could land on any day of the week. In practice, the user runs follow-up maintenance as a dedicated Monday session. Mid-week follow-up dates created interruptions during pipeline-building work and uneven batch accumulation.
+
+### Decision
+
+**1. Config-driven initial offset, default 14 days.** `database.py` reads `follow_up_offset_days` from config. `models.py` constant updated from 30 to 14 as fallback default.
+
+**2. All follow-up dates snap to next Monday.** A single utility function, `next_monday(reference_date)`, returns the next Monday strictly after the given date. Both paths use it: initial follow-up = `next_monday(date_applied + offset_days)`, still-posted recheck = `next_monday(today)`.
+
+**3. `log_still_posted` hardcoded 7-day interval removed.** Replaced by `next_monday(today)`.
+
+### Rationale
+
+- One lever, one source. The config value is authoritative. The constant is the fallback.
+- Monday maintenance is a workflow decision. Most employer rejections arrive Friday afternoons and weekends. Monday morning maintenance reviews the full week's signals in one session.
+- Predictable batching. Every follow-up date is a Monday. No mid-week stragglers.
+
+### `next_monday()` Specification
+
+```python
+def next_monday(reference_date: date) -> date:
+    """Return the next Monday strictly after reference_date.
+
+    If reference_date is a Monday, returns the following Monday (7 days later),
+    not the same day — prevents setting a follow-up for today and immediately
+    surfacing it as due.
+    """
+    days_ahead = 7 - reference_date.weekday()  # weekday(): Mon=0, Sun=6
+    if days_ahead == 7:  # reference_date is already Monday
+        days_ahead = 7   # snap to next Monday, not today
+    return reference_date + timedelta(days=days_ahead)
+```
+
+### Consequences
+
+- `models.py`: `DEFAULT_FOLLOW_UP_OFFSET_DAYS` changes from 30 to 14.
+- `database.py`: `update_opportunity()` reads offset from config. `next_monday()` added as module-level utility.
+- `tools.py`: `log_still_posted()` calls `next_monday(today)` instead of `today + timedelta(days=7)`.
+- `pipelinepilot.config`: `follow_up_offset_days` value updated from 30 to 14.
+- Existing follow-up dates are not retroactively migrated — they snap to Mondays as each opportunity is processed in the next maintenance session.
+
+---
+
+## ADR-011: Multi-Select Status Filtering
+
+**Date:** August 7, 2026
+**Status:** Accepted
+
+### Context
+
+`get_all_opportunities()` in `database.py` and `pipi_query_pipeline` in the MCP server accept a single `status_filter` string. Common workflow patterns require viewing multiple statuses simultaneously — for example, all active opportunities (Applied + In Review + Interviewing), or all terminal outcomes (Closed + Rejected + Ghosted + Passed).
+
+### Decision
+
+`status_filter` accepts a list of status strings. The SQL query builds a `WHERE status IN (?, ?, ...)` clause. Backward compatibility preserved: a single string is accepted and wrapped in a list internally.
+
+### Rationale
+
+- Multi-status views are the natural query pattern for pipeline review.
+- The addition of "Ghosted" (ADR-009) makes this more pressing — terminal statuses now include five values.
+- Backward compatibility means no existing code breaks.
+
+### Consequences
+
+- `database.py`: `get_all_opportunities()` parameter `status_filter: str | list[str] | None`. Each value validated against `STATUS_VALUES`.
+- `tools.py`: `query_pipeline()` validates and accepts list for status filter.
+- Desktop UI: Multi-select widget replaces single-select dropdown (lower priority).
+- MCP tool schema: `status_filter` type changes from `string | null` to `string | array[string] | null`.
+
+---
+
 *ADRs 001–007 produced from a structured requirements interview and cross-platform AI design session (Claude + ChatGPT) conducted March 7, 2026.*
-*ADR-008 added March 12, 2026, following several days of production use. All decisions captured in OpenBrain with [source:claude] tags.*
+*ADR-008 added March 12, 2026, following several days of production use.*
+*ADRs 009–011 added August 7, 2026, driven by follow-up maintenance skill design work and data analysis of all 197 pipeline records.*
