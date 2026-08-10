@@ -270,18 +270,32 @@ def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
             + personal_context
             + "\n\n---"
         )
+    # Prompt caching: system prompt + personal context cached via explicit
+    # breakpoint. Resume cached as a separate user message so back-to-back
+    # JFA runs (same resume, different JDs) get cache hits on the stable
+    # prefix. Only the final user message (company/role/JD) is processed
+    # fresh on runs 2+. 5-minute TTL refreshes on each hit.
     message = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=effective_prompt,
-        messages=[{
-            "role": "user",
-            "content": (
+        system=[{
+            "type": "text",
+            "text": effective_prompt,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        messages=[
+            {"role": "user", "content": [{
+                "type": "text",
+                "text": f"RESUME:\n{resume_text}",
+                "cache_control": {"type": "ephemeral"}
+            }]},
+            {"role": "assistant", "content": "Resume and context received. Provide the company, role, and job description."},
+            {"role": "user", "content": (
                 f"COMPANY: {company}\n"
                 f"ROLE: {role}\n\n"
-                f"RESUME:\n{resume_text}\n\n---\n\nJOB DESCRIPTION:\n{jd_text}"
-            )
-        }]
+                f"JOB DESCRIPTION:\n{jd_text}"
+            )}
+        ]
     )
     raw = message.content[0].text.strip()
     raw = re.sub(r"^```json\s*", "", raw)
