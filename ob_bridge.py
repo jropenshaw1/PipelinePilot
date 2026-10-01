@@ -21,6 +21,17 @@ import requests
 
 logger = logging.getLogger("ob_bridge")
 
+# Reason the most recent parse_qfl_block() call rejected its input.
+# run_import() reads this to attach the reason to each parse failure.
+_last_reject_reason: Optional[str] = None
+
+
+def _reject(reason: str) -> None:
+    """Record and log why a QFL block was rejected."""
+    global _last_reject_reason
+    _last_reject_reason = reason
+    logger.warning(reason)
+
 # ── Block Parsers ──────────────────────────────────────────
 
 # Pattern to extract [quick-fit-log]...[/quick-fit-log] block
@@ -87,8 +98,12 @@ def parse_qfl_block(content: str) -> Optional[dict]:
     Parse a [quick-fit-log] structured block from OB thought content.
     Returns a dict of field:value pairs, or None if block not found.
     """
+    global _last_reject_reason
+    _last_reject_reason = None
+
     match = QFL_BLOCK_RE.search(content)
     if not match:
+        _last_reject_reason = "No [quick-fit-log] block found"
         return None
 
     block_text = match.group(1).strip()
@@ -111,7 +126,7 @@ def parse_qfl_block(content: str) -> Optional[dict]:
     }
     missing = required - set(fields.keys())
     if missing:
-        logger.warning(f"QFL block missing required fields: {missing}")
+        _reject(f"QFL block missing required fields: {missing}")
         return None
 
     # ── Normalize aliases before validation ────────────────
@@ -127,16 +142,16 @@ def parse_qfl_block(content: str) -> Optional[dict]:
 
     # Validate enum values
     if fields.get("source_channel") not in VALID_SOURCE_CHANNELS:
-        logger.warning(f"Invalid source_channel: {fields.get('source_channel')}")
+        _reject(f"Invalid source_channel: {fields.get('source_channel')}")
         return None
     if fields.get("role_level") not in VALID_ROLE_LEVELS:
-        logger.warning(f"Invalid role_level: {fields.get('role_level')}")
+        _reject(f"Invalid role_level: {fields.get('role_level')}")
         return None
     if fields.get("quick_fit") not in VALID_QUICK_FIT:
-        logger.warning(f"Invalid quick_fit: {fields.get('quick_fit')}")
+        _reject(f"Invalid quick_fit: {fields.get('quick_fit')}")
         return None
     if fields.get("decision") not in VALID_DECISIONS:
-        logger.warning(f"Invalid decision: {fields.get('decision')}")
+        _reject(f"Invalid decision: {fields.get('decision')}")
         return None
 
     # Validate opportunity_type (default to 'job' if missing)
@@ -153,7 +168,7 @@ def parse_qfl_block(content: str) -> Optional[dict]:
 
     # Enforce: pass requires primary_pass_reason
     if fields["decision"] == "pass" and not fields.get("primary_pass_reason"):
-        logger.warning("decision=pass but no primary_pass_reason — skipping")
+        _reject("decision=pass but no primary_pass_reason")
         return None
 
     return fields
@@ -428,9 +443,10 @@ def run_import(
                     company_hint = stripped.partition(":")[2].strip() or "unknown"
                 elif stripped.startswith("role_title:"):
                     role_hint = stripped.partition(":")[2].strip() or "unknown"
-            result["parse_failures"].append(
-                f"{ob_id} — {company_hint} / {role_hint}"
-            )
+            reason = _last_reject_reason or "Unknown parse failure"
+            failure = f"{ob_id} — {company_hint} / {role_hint} — {reason}"
+            result["parse_failures"].append(failure)
+            logger.warning(f"[PARSE FAIL] {failure}")
 
     result["parsed"] = len(records)
 
