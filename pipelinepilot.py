@@ -1276,6 +1276,12 @@ class PipelinePilotApp(ctk.CTk):
             f"Skipped:  {result['skipped']} (already imported)",
         ]
 
+        non_qfl = result.get("non_qfl_skipped", [])
+        if non_qfl:
+            lines.append(f"Not QFL:  {len(non_qfl)} (no [quick-fit-log] block — skipped)")
+            for nq in non_qfl[:5]:
+                lines.append(f"  • {nq}")
+
         if result["parse_failures"]:
             lines.append(f"Parse failures: {len(result['parse_failures'])}")
             for pf in result["parse_failures"][:5]:

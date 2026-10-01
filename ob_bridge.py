@@ -25,6 +25,13 @@ logger = logging.getLogger("ob_bridge")
 # run_import() reads this to attach the reason to each parse failure.
 _last_reject_reason: Optional[str] = None
 
+# How many characters of raw entry content to show on a parse failure.
+PARSE_FAIL_PREVIEW_CHARS = 300
+
+# Reject reason for thoughts that mention the QFL tags in prose but contain
+# no actual block (e.g. Context Rescue handoffs). These are skipped, not failed.
+NO_BLOCK_REASON = "No [quick-fit-log] block found"
+
 
 def _reject(reason: str) -> None:
     """Record and log why a QFL block was rejected."""
@@ -103,7 +110,7 @@ def parse_qfl_block(content: str) -> Optional[dict]:
 
     match = QFL_BLOCK_RE.search(content)
     if not match:
-        _last_reject_reason = "No [quick-fit-log] block found"
+        _last_reject_reason = NO_BLOCK_REASON
         return None
 
     block_text = match.group(1).strip()
@@ -423,7 +430,9 @@ def run_import(
         imported: int — new records inserted
         skipped: int — duplicates skipped
         errors: list[str] — insert errors
-        parse_failures: list[str] — thoughts that couldn't be parsed
+        parse_failures: list[str] — QFL blocks that failed validation
+        non_qfl_skipped: list[str] — thoughts that mention the QFL tags
+            but contain no block (not counted as failures)
     """
     result = {
         "fetched": 0,
@@ -432,6 +441,7 @@ def run_import(
         "skipped": 0,
         "errors": [],
         "parse_failures": [],
+        "non_qfl_skipped": [],
         "duplicates": [],
     }
 
@@ -461,7 +471,24 @@ def run_import(
                 elif stripped.startswith("role_title:"):
                     role_hint = stripped.partition(":")[2].strip() or "unknown"
             reason = _last_reject_reason or "Unknown parse failure"
-            failure = f"{ob_id} — {company_hint} / {role_hint} — {reason}"
+            created_hint = thought.get("created_at", "") or "unknown date"
+            if reason == NO_BLOCK_REASON:
+                first_line = content.strip().split("\n", 1)[0][:80]
+                note = f"{ob_id} — created {created_hint} — {first_line}"
+                result["non_qfl_skipped"].append(note)
+                logger.info(f"[SKIP] Not a QFL entry: {note}")
+                continue
+            # First part of the raw entry, newlines shown as ⏎ so the
+            # whole preview stays on one log line.
+            preview = content[:PARSE_FAIL_PREVIEW_CHARS].replace("\r", "")
+            preview = preview.replace("\n", " ⏎ ")
+            if len(content) > PARSE_FAIL_PREVIEW_CHARS:
+                preview += " …"
+            failure = (
+                f"{ob_id} — created {created_hint} — "
+                f"{company_hint} / {role_hint} — {reason}\n"
+                f"    PREVIEW: {preview}"
+            )
             result["parse_failures"].append(failure)
             logger.warning(f"[PARSE FAIL] {failure}")
 
