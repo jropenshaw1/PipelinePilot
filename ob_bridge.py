@@ -245,15 +245,21 @@ def parse_ob_thought(thought: dict) -> Optional[dict]:
 def fetch_qfl_thoughts(
     supabase_url: str,
     supabase_key: str,
-    limit: int = 200,
+    page_size: int = 500,
+    max_pages: int = 50,
 ) -> list[dict]:
     """
     Fetch OB thoughts containing [quick-fit-log] blocks via Supabase REST API.
 
     Schema note: The OB 'thoughts' table has columns (id, content, metadata,
     created_at, updated_at, embedding, version). Topics live inside the
-    'metadata' jsonb column, not as a top-level column. We fetch recent
-    thoughts and filter client-side for the [quick-fit-log] marker in content.
+    'metadata' jsonb column, not as a top-level column.
+
+    Filtering happens server-side (content LIKE '%[/quick-fit-log]%') and
+    results are paginated, so every QFL entry is reachable no matter how many
+    other thoughts exist. Previously this fetched the newest 200 thoughts of
+    any type and filtered client-side, which let older QFL entries fall out
+    of import reach as OB grew.
     """
     rest_url = f"{supabase_url}/rest/v1/thoughts"
 
@@ -263,33 +269,44 @@ def fetch_qfl_thoughts(
         "Accept": "application/json",
     }
 
-    # Fetch recent thoughts — real columns only
-    params = {
-        "order": "created_at.desc",
-        "limit": str(limit),
-        "select": "id,content,metadata,created_at",
-    }
-
+    all_thoughts = []
     try:
-        resp = requests.get(rest_url, headers=headers, params=params, timeout=15)
-        # Handle both 200 and 206 (partial content when count headers present)
-        if resp.status_code not in (200, 206):
-            logger.error(
-                f"Supabase API error: {resp.status_code} — {resp.text[:200]}"
+        for page in range(max_pages):
+            params = {
+                "select": "id,content,metadata,created_at",
+                # PostgREST: * is the LIKE wildcard; brackets are literal
+                "content": "like.*[/quick-fit-log]*",
+                "order": "created_at.desc,id.desc",
+                "limit": str(page_size),
+                "offset": str(page * page_size),
+            }
+            resp = requests.get(rest_url, headers=headers, params=params, timeout=15)
+            # Handle both 200 and 206 (partial content when count headers present)
+            if resp.status_code not in (200, 206):
+                logger.error(
+                    f"Supabase API error: {resp.status_code} — {resp.text[:200]}"
+                )
+                return []
+
+            batch = resp.json()
+            all_thoughts.extend(batch)
+            if len(batch) < page_size:
+                break
+        else:
+            logger.warning(
+                f"Stopped after {max_pages} pages ({len(all_thoughts)} thoughts); "
+                "some QFL entries may not have been fetched"
             )
-            return []
 
-        all_thoughts = resp.json()
-
-        # Client-side filter: only thoughts containing both opening and closing tags
+        # Belt and braces: require both opening and closing tags
         qfl_thoughts = [
             t for t in all_thoughts
             if "[quick-fit-log]" in (t.get("content") or "")
             and "[/quick-fit-log]" in (t.get("content") or "")
         ]
         logger.info(
-            f"Fetched {len(all_thoughts)} thoughts, "
-            f"{len(qfl_thoughts)} contain [quick-fit-log]"
+            f"Fetched {len(all_thoughts)} thoughts matching the QFL filter, "
+            f"{len(qfl_thoughts)} contain both tags"
         )
         return qfl_thoughts
 
