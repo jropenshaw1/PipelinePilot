@@ -27,6 +27,19 @@ from models import (
     OB_SUPABASE_KEY_KEY,
 )
 
+# Date fields entered by hand in the detail view (YYYY-MM-DD)
+DATE_FIELDS = ("date_applied", "follow_up_date", "interview_date", "last_communication_date")
+
+
+def _safe_date(value):
+    """Parse a YYYY-MM-DD string. Returns a date, or None if empty or malformed."""
+    if not value or value == "\u2014":
+        return None
+    try:
+        return date.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
 # ─────────────────────────────────────────────
 # Appearance
 # ─────────────────────────────────────────────
@@ -1408,7 +1421,10 @@ class PipelinePilotApp(ctk.CTk):
             ctk.CTkLabel(row, text=status, font=ctk.CTkFont(size=11), fg_color=C_BLUE, corner_radius=6, text_color="white", width=120).pack(side="left", padx=4)
 
             fu_date = opp.get("follow_up_date", "—")
-            days_overdue = (date.today() - date.fromisoformat(fu_date)).days if fu_date and fu_date != "—" else 0
+            fu = _safe_date(fu_date)
+            if fu_date and fu_date != "—" and fu is None:
+                print(f"[FOLLOWUPS] Malformed follow-up date for {opp.get('folder_name')}: {fu_date!r}")
+            days_overdue = (date.today() - fu).days if fu else 0
             fu_color = C_ACCENT if days_overdue > 0 else C_WARNING
             fu_text = f"{fu_date}  ({days_overdue}d overdue)" if days_overdue > 0 else fu_date
             ctk.CTkLabel(row, text=fu_text, font=ctk.CTkFont(size=11), text_color=fu_color, width=100).pack(side="left", padx=4)
@@ -2204,6 +2220,16 @@ class DetailWindow(ctk.CTkToplevel):
             elif isinstance(widget, ctk.CTkTextbox):
                 val = widget.get("1.0", "end").strip() or None
                 updates[key] = val
+
+        # Reject malformed dates before they reach the database
+        bad = [k for k in DATE_FIELDS if updates.get(k) and _safe_date(updates[k]) is None]
+        if bad:
+            names = ", ".join(k.replace("_", " ") for k in bad)
+            messagebox.showerror(
+                "Invalid date",
+                f"Use YYYY-MM-DD format (for example 2026-09-17).\n\nCheck: {names}",
+            )
+            return
 
         # Auto-fill date_applied when status changes to Applied and field is empty
         if updates.get("status") == "Applied" and not updates.get("date_applied"):
