@@ -503,6 +503,15 @@ def get_quick_fit_entries(
             return []
 
 
+def get_quick_fit_entry(db_path: Path, qfl_id: int) -> dict | None:
+    """Fetch one quick-fit-log entry by id, regardless of filter, archive or age."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM quick_fit_log WHERE id = ?", (qfl_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_quick_fit_metrics(db_path: Path) -> dict:
     """Compute quick-fit-log summary metrics (active entries only)."""
     with _connect(db_path) as conn:

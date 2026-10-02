@@ -1136,17 +1136,12 @@ class PipelinePilotApp(ctk.CTk):
             return
 
         # Fetch the entry for confirmation dialog
-        entries = database.get_quick_fit_entries(self.db_path)
-        print(f"[PROMOTE] Fetched {len(entries)} QFL entries, searching for id={qfl_id}")
-        entry = None
-        for e in entries:
-            if e.get("id") == qfl_id:
-                entry = e
-                break
+        # Look up by id directly. The list helper returns only the 100 newest
+        # active entries, so filtered, archived or older rows were "not found".
+        entry = database.get_quick_fit_entry(self.db_path, qfl_id)
 
         if not entry:
-            print(f"[PROMOTE] Entry not found. Available IDs: "
-                  f"{[e.get('id') for e in entries[:10]]}")
+            print(f"[PROMOTE] Entry id={qfl_id} not in quick_fit_log")
             messagebox.showerror("Not Found", f"Quick-fit entry #{qfl_id} not found.")
             return
 
