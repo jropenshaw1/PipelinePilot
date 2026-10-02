@@ -768,8 +768,9 @@ def run_fit_analysis(
             _p("Generating interview prep guide...", stage="interview_guide")
             ip_path = generate_interview_guide(result, company, role, folder_path)
 
-            # Update SQLite
-            database.update_opportunity(db_path, folder_name, {
+            # Update SQLite. Status moves to Analyzing only from a pre-analysis
+            # status; a JFA re-run never moves Applied/Pursuing/etc. backward.
+            updates = {
                 "fit_score": result["fit_score"],
                 "fit_threshold": fit_threshold,
                 "recommendation": recommendation,
@@ -778,9 +779,11 @@ def run_fit_analysis(
                     if len(s.strip()) > 20
                 ][:3]),
                 "top_gaps": str([g["area"] for g in result.get("gaps", [])[:3]]),
-                "status": "Analyzing",
                 "jfa_completed": 1,
-            })
+            }
+            if opp.get("status") in ("New", "Capturing"):
+                updates["status"] = "Analyzing"
+            database.update_opportunity(db_path, folder_name, updates)
 
             output_files = [md_path, fa_path, cl_path, res_path, ip_path]
             _p("Complete.", f"{result['fit_score']:.0%} — {recommendation}", stage="complete")
