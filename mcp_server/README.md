@@ -45,8 +45,10 @@ Import: `pipi_run_ob_import`.
 
 All dates must use `YYYY-MM-DD`. Opportunity writes use the existing
 `database.update_opportunity()` function. `pipi_mark_applied` therefore
-inherits the current 30-day follow-up behavior in `database.py`; it does not
-use the currently unused configuration offset.
+sets the first follow-up through `database.initial_follow_up()`: the next
+Monday after `date_applied` plus `follow_up_offset_days`, read live from
+`pipelinepilot.config` on every call (ADR-010). A change saved in Settings
+takes effect without restarting the server.
 
 ## SQL logging
 

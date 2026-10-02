@@ -20,6 +20,11 @@ STATUS_VALUES = [
 # Terminal statuses — no further progression expected
 TERMINAL_STATUSES = ["Passed", "Offer", "Closed", "Ghosted", "Rejected"]
 
+# Statuses at or past application — "Mark Applied" is hidden for these
+POST_APPLICATION_STATUSES = [
+    "Applied", "In Review", "Interviewing", "Offer", "Closed", "Ghosted", "Rejected",
+]
+
 # Approved source values (data dictionary §5.1)
 SOURCE_VALUES = [
     "LinkedIn",

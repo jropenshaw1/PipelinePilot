@@ -40,7 +40,7 @@ The commit history reflects this. The timestamps are not edited.
 
 ## Documentation
 
-All pre-code documentation is in `/docs`:
+All project documentation is in `/docs`. Documents 01–07 were written before the first line of implementation code; 08 specifies the MCP server added later.
 
 | Document | Standard |
 |---|---|
@@ -51,6 +51,7 @@ All pre-code documentation is in `/docs`:
 | 05 -- Process Flow | BPMN 2.0 |
 | 06 -- Architecture Decision Records | Michael Nygard ADR |
 | 07 -- Definition of Done | -- |
+| 08 -- MCP Server PRD | -- |
 
 ---
 
@@ -83,7 +84,7 @@ Filesystem-first ensures the system remains durable, inspectable, and recoverabl
 - **Idempotent recovery.** `pipelinepilot rebuild-index` reconstructs the entire SQLite database from the filesystem. Run it once or ten times -- same result.
 - **AI as capture interface.** Quick-fit triage happens conversationally through AI agents, with structured entries written to OpenBrain and imported into PipelinePilot. No manual form entry required.
 
-Seven Architecture Decision Records document every significant choice, including what was rejected and why. See `/docs/06_architecture_decision_records.md`.
+The Architecture Decision Records document every significant choice, including what was rejected and why. See [`docs/06_ADR_Log_v1.1.md`](docs/06_ADR_Log_v1.1.md).
 
 ---
 
@@ -97,7 +98,7 @@ Non-goals include:
 
 - **No job board scraping.** PipelinePilot assumes discovery happens elsewhere. It manages opportunities after discovery.
 - **No AI reasoning inside PipelinePilot.** AI analysis is owned by the Job Fit Analyst system. PipelinePilot indexes outputs but never generates competing analysis.
-- **No cloud service dependency.** The system runs entirely locally. Cloud storage is used only for file synchronization. OpenBrain integration is optional and one-directional (import only).
+- **No cloud service dependency.** The system runs entirely locally. Cloud storage is used only for file synchronization. OpenBrain integration is optional and one-directional (import only). The MCP server is local stdio only.
 - **No complex workflow engine.** The lifecycle stages are intentionally simple and human-driven.
 
 These constraints keep the system understandable, recoverable, and durable.
@@ -109,12 +110,15 @@ These constraints keep the system understandable, recoverable, and durable.
 - **Opportunity capture** -- creates `Company_Role` folder and blank job description document in one action
 - **Quick-fit triage** -- AI-powered rapid JD assessment across six dimensions (level, domain, location, degree/cert, culture, comp) with structured logging via OpenBrain
 - **Promote to Pipeline** -- one-click promotion of quick-fit entries to full pipeline opportunities with editable company/role, JD pre-population, and folder creation
-- **OpenBrain import** -- one-click import of quick-fit-log entries from Supabase-backed AI memory into SQLite, with idempotent dedup
+- **OpenBrain import** -- one-click import of quick-fit-log entries from Supabase-backed AI memory into SQLite, with server-side filtering, pagination, idempotent dedup, and a diagnostic summary that gives the reason for every rejected entry
 - **Quick-fit log viewer** -- color-coded table of triage decisions with decision filtering and summary metrics
 - **Fit analysis integration** -- parses YAML front-matter from `fit_analysis.md` to index score, recommendation, strengths, and gaps without duplicating reasoning
 - **Pursuit tracker** -- filtered view of active pursuits (Analyzing/Pursuing) with checklist columns for JFA completion, cover letter review, and resume review
 - **Follow-ups due** -- persistent sidebar link with live count badge; drill-down view of overdue follow-ups sorted by date
 - **Mark Applied one-click** -- sets status, date applied, and follow-up date in a single action from either the pursuit tracker or the detail view
+- **Monday follow-ups** -- every follow-up date lands on a Monday: the first one after the configured offset (Settings, default 14 days), and the next Monday after each still-posted check. Changing the offset in Settings takes effect immediately everywhere
+- **Posting status log** -- machine-maintained record of every "still posted" check and the date a posting disappeared, kept separate from action items
+- **MCP server** -- local MCP server that lets Claude Desktop query and update the pipeline directly, for conversational follow-up maintenance. See [`mcp_server/README.md`](mcp_server/README.md)
 - **Full lifecycle tracking** -- Discovery to Capture to Fit Analysis to Application to Tracking to Close
 - **Employer communication log** -- running dated log per role; confirmation email paste capture
 - **Action items and interview management** -- per-role task list, interview date, pre/post notes
@@ -129,8 +133,23 @@ These constraints keep the system understandable, recoverable, and durable.
 PipelinePilot includes a lightweight triage layer for rapid JD evaluation. The workflow:
 
 1. **Triage in conversation** -- tell your AI agent "quick fit" with a pasted JD. The agent assesses fit across six dimensions and writes a structured `[quick-fit-log]` entry to OpenBrain.
-2. **Import into PipelinePilot** -- click "Import from OB" in the sidebar. PipelinePilot fetches entries from Supabase, parses the structured blocks, deduplicates by thought ID, and inserts into the `quick_fit_log` SQLite table.
+2. **Import into PipelinePilot** -- click "Import from OB" in the sidebar. PipelinePilot asks Supabase only for thoughts containing a `[quick-fit-log]` block (server-side filter, paginated), so every QFL entry stays reachable no matter how large OpenBrain grows. It then parses the structured blocks, deduplicates by thought ID, and inserts into the `quick_fit_log` SQLite table.
 3. **Review in the Quick-Fit Log** -- the "Quick-Fit Log" view shows all triage decisions with color-coded fit scores and decision badges, filterable by decision type.
+
+### Reading the Import Summary
+
+Each import ends with a summary screen:
+
+| Line | Meaning |
+|---|---|
+| Fetched | Thoughts returned by the QFL filter |
+| Parsed | Valid `[quick-fit-log]` blocks |
+| Imported | New rows written to `quick_fit_log` |
+| Skipped | Already imported (dedup by thought ID) -- expected on re-import |
+| Not QFL | Thoughts that mention the QFL tags in prose but contain no block (for example, session handoff notes). Skipped, not counted as failures |
+| Parse failures | Real QFL blocks that failed validation. Each shows the thought ID, created date, company / role, the rejection reason (missing field, invalid enum value, `pass` without a pass reason), and a 300-character preview of the raw entry |
+
+The screen lists the first five items per category. The full list, including every preview, is written to the log.
 
 This creates a complete triage-to-pipeline funnel: AI handles the capture, PipelinePilot handles the management. Roles scored as "pursue" can be promoted to the full pipeline for detailed fit analysis, resume optimization, and application tracking.
 
@@ -262,7 +281,7 @@ My role is to create the conditions where great engineering happens: clear direc
 
 ## Status
 
-🟢 **v0.4.0** -- Desktop application operational. Pursuit tracker live. Follow-ups sidebar badge active. Quick-fit triage pipeline and OpenBrain import functional.
+🟢 **v0.4.0** -- Desktop application operational. Pursuit tracker live. Follow-ups sidebar badge active. Quick-fit triage pipeline and OpenBrain import functional. MCP server and posting status log in use; see [Unreleased] in the CHANGELOG for changes since 0.4.0.
 
 ---
 

@@ -6,7 +6,8 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
-from models import DB_FILENAME, DEFAULT_FOLLOW_UP_OFFSET_DAYS
+import config
+from models import DB_FILENAME
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS opportunities (
@@ -245,24 +246,29 @@ def next_monday(reference_date: date) -> date:
     return reference_date + timedelta(days=days_ahead)
 
 
-def update_opportunity(
-    db_path: Path,
-    folder_name: str,
-    updates: dict,
-    follow_up_offset_days: int = DEFAULT_FOLLOW_UP_OFFSET_DAYS,
-) -> None:
+def initial_follow_up(date_applied: date) -> date:
+    """ADR-010: initial follow-up = next_monday(date_applied + offset).
+
+    Every caller that sets a first follow-up date (desktop Mark Applied,
+    status-change auto-fill, Save, MCP pipi_mark_applied) uses this one
+    function. The offset comes from config.get_follow_up_offset_days(),
+    read live, so there is no per-caller default to drift.
+    """
+    offset = config.get_follow_up_offset_days()
+    return next_monday(date_applied + timedelta(days=offset))
+
+
+def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
     """FR-10: Update fields and auto-set date_modified. FR-18: Auto follow_up_date."""
     updates = dict(updates)
     updates["date_modified"] = date.today().isoformat()
 
     if updates.get("status") == "Applied" and updates.get("date_applied"):
         if not updates.get("follow_up_date"):
+            # Assign, not setdefault: the key may be present with value None
+            # (empty field in the detail view), and setdefault would keep it.
             applied = date.fromisoformat(updates["date_applied"])
-            raw_followup = applied + timedelta(days=follow_up_offset_days)
-            updates.setdefault(
-                "follow_up_date",
-                next_monday(raw_followup).isoformat(),
-            )
+            updates["follow_up_date"] = initial_follow_up(applied).isoformat()
 
     set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
     sql = f"UPDATE opportunities SET {set_clause} WHERE folder_name = ?"

@@ -11,11 +11,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **PipelinePilot MCP server** (`mcp_server/`) -- local stdio MCP server exposing the SQLite pipeline to Claude Desktop as a thin wrapper over `database.py`, `config.py`, and `ob_bridge.py`. Read tools: `pipi_query_pipeline`, `pipi_get_opportunity`, `pipi_get_dashboard`, `pipi_get_followups_due`, `pipi_search_opportunities`. Write tools: `pipi_update_status`, `pipi_update_followup`, `pipi_log_communication`, `pipi_update_contact`, `pipi_close_opportunity`, `pipi_archive_opportunity`, `pipi_mark_applied`, `pipi_log_still_posted`, `pipi_add_interview`. Import: `pipi_run_ob_import`. SQL statements are traced to stderr (stdout is reserved for JSON-RPC). `PIPI_MCP_DB_PATH` points the server at a disposable test database. Spec: `docs/08_MCP_Server_PRD_v1.4.md`. Setup: `mcp_server/README.md`.
+- **`posting_status_log` field** (ADR-009) -- machine-maintained posting lifecycle record on `opportunities`: `STILL POSTED: YYYY-MM-DD | YYYY-MM-DD | ...` plus `NOT POSTED: YYYY-MM-DD` on ghosted closure. Written only by `pipi_log_still_posted` and `pipi_close_opportunity`.
+- **Ghosted status** (ADR-009) -- first-class terminal status in `STATUS_VALUES` and `TERMINAL_STATUSES`. Excluded from follow-ups due, like the other terminal statuses.
+- **Multi-select status filter** (ADR-011) -- `get_all_opportunities()` and `pipi_query_pipeline` accept a single status or a list. Desktop multi-select widget not yet built.
+- **`database.next_monday()`** and **`database.initial_follow_up()`** (ADR-010) -- one function for the Monday snap, one for the first follow-up date. Every caller uses them.
+- **`config.get_follow_up_offset_days()`** -- the single accessor for the follow-up offset. Reads `pipelinepilot.config` on every call, so a change saved in Settings takes effect immediately in the desktop app and in a running MCP server, with no restart. Falls back to `DEFAULT_FOLLOW_UP_OFFSET_DAYS` if the key is missing or not a whole number of at least 1.
+- **`POST_APPLICATION_STATUSES`** in `models.py` -- the one list that decides when "Mark Applied" is hidden. Replaces two duplicated inline sets in `pipelinepilot.py`.
+- **`test_follow_up.py`** -- 13 tests covering the offset accessor (fallbacks, live re-read), Monday snap, and `update_opportunity()` follow-up auto-set.
+- **`AGENTS.md`** -- agent induction file: project shape, architecture conventions, and the governance reference for coding agents working in this repo.
 - **Quick-Fit Log archive** -- manual archive system for QFL entries. Toggle button ("📦 View Archive" / "📋 View Active") in the filter bar switches between active and archived views. Per-row 📦 button archives individual entries with confirmation dialog. Decision filter works in both views. Archive button only visible in active view.
-- **Auto-fill date fields on status dropdown change** -- selecting "Applied" from the status dropdown in Detail view now instantly populates date_applied (today) and follow_up_date (today + configured offset) on screen, so the user can see and adjust before clicking Save. Only fires when fields are empty; respects manual entries. Existing _save() auto-fill retained as safety net.
+- **Auto-fill date fields on status dropdown change** -- selecting "Applied" from the status dropdown in Detail view now instantly populates date_applied (today) and follow_up_date (the Monday after today + configured offset, via `database.initial_follow_up()`) on screen, so the user can see and adjust before clicking Save. Only fires when fields are empty; respects manual entries. Existing _save() auto-fill retained as safety net.
+- **Parse failure diagnostics** -- every OB import parse failure now carries the rejection reason (missing required fields, invalid `source_channel` / `role_level` / `quick_fit` / `decision`, or `decision=pass` without `primary_pass_reason`), the thought's created date, and a 300-character preview of the raw entry (newlines shown as ⏎). Previously a failure showed only the thought ID and company/role, so diagnosing it meant opening the thought in OpenBrain.
+- **"Not QFL" line on the import summary** -- thoughts that mention the `[quick-fit-log]` tags in prose but contain no block (for example, Context Rescue handoffs) are listed separately with created date and first line, and are no longer counted as parse failures.
 
 ### Changed
 
+- **Follow-up dates** (ADR-010) -- every follow-up date is a Monday. Initial follow-up = `next_monday(date_applied + offset)`. Still-posted recheck = `next_monday(today)`, replacing the hardcoded 7 days in `log_still_posted()`.
+- **Default follow-up offset** changed from 30 to 14 days (`DEFAULT_FOLLOW_UP_OFFSET_DAYS`, ADR-010). Reverses the 0.4.0 change.
+- **`database.update_opportunity()`** -- `follow_up_offset_days` parameter removed. The offset is resolved inside `initial_follow_up()` from live config, so no caller can pass a stale or hardcoded value.
+- **`pipi_log_still_posted`** writes to `posting_status_log` instead of `action_items` (ADR-009).
+- **`pipi_close_opportunity`** -- `ghosted` boolean removed. Use `status="Ghosted"`, which appends `NOT POSTED: YYYY-MM-DD` to `posting_status_log` (ADR-009). Breaking change for MCP callers that passed `ghosted=true`.
+- **Fit analysis prompt caching** -- `fit_analysis_engine.py` marks the system prompt and the resume as cache breakpoints, so back-to-back JFA runs against the same resume reuse the cached prefix (about 90% lower input-token cost from the second run on, 5-minute TTL). No change to output.
+- **Settings label** for the follow-up offset now states that dates snap to the next Monday.
+- **OB import fetch** -- `fetch_qfl_thoughts()` now filters server-side (`content LIKE '%[/quick-fit-log]%'`) and paginates (500 per page, up to 50 pages, ordered `created_at desc, id desc`). The client-side check for both opening and closing tags is kept as a second guard. Replaces the v0.2.0 approach of fetching the newest 200 thoughts of any type and filtering client-side. Signature change: `limit` replaced by `page_size` and `max_pages`.
+- **`run_import()` result** -- adds `non_qfl_skipped: list[str]`. `parse_failures` now holds only QFL blocks that failed validation.
 - **_field_option helper** now accepts an optional `on_change` callback, passed through to CTkOptionMenu `command`. Backward compatible (defaults to None).
 - **_refresh_qfl** now passes `show_archived` parameter to `get_quick_fit_entries()` based on archive toggle state.
 - **QFL metrics** now count active entries only (`archived = 0`) for the header total, decision breakdown pills, and fit breakdown.
@@ -28,11 +48,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Database Migration
 
 - **Migration 007** (idempotent, inline in `migrate_add_quick_fit_log`): adds `archived INTEGER NOT NULL DEFAULT 0` column to `quick_fit_log` table.
+- **Migration 009** (idempotent, `migrate_add_posting_status_log`): adds `posting_status_log TEXT` to `opportunities`.
+- **`migrations/migrate_action_items_to_posting_status_log.py`** (one-time, manual): relocates STILL POSTED trails and GHOSTED markers from `action_items` to `posting_status_log` and status, normalizing dates to ISO 8601. Dry run by default; `--apply` writes after taking a timestamped backup. Records that already have `posting_status_log` data are skipped.
 - **Migration 008** (idempotent, inline in `migrate_add_quick_fit_log`): table rebuild adding `Sr. Manager` to `role_level` CHECK constraint and `company-site` to `source_channel` CHECK constraint. Root cause: May 2026 job search scope expansion to include Sr. Manager roles was not reflected in the schema enum, causing 8 OB import parse failures in a single QF batch session.
 
 ### Fixed
 
 - **Pursuit Tracker now includes Capturing status** -- Pursuit Tracker previously only queried Analyzing and Pursuing statuses, so newly promoted or manually captured opportunities (which enter as Capturing) were invisible. All three pre-application statuses (Capturing, Analyzing, Pursuing) are now included, matching the intended workflow: every opportunity is tracked from first entry through Applied.
+- **Follow-up offset ignored by the desktop app** -- five UI paths (Mark Applied from the Pursuit Tracker, Mark Applied from Detail view, status-change auto-fill, and two in Save) computed follow-up dates themselves with a hardcoded 30-day fallback and no Monday snap. Changing the offset in Settings had no reliable effect, and desktop-set dates disagreed with MCP-set dates. All paths now call `database.initial_follow_up()`.
+- **Follow-up offset change required MCP server restart** -- the server read the offset from config loaded at startup. It now reads it live through `config.get_follow_up_offset_days()`.
+- **`update_opportunity()` could skip the follow-up auto-set** -- it used `setdefault`, which does nothing when the key is present with value `None` (an empty field from Detail view). Now assigns directly.
+- **"Mark Applied" shown on Ghosted opportunities** -- the inline status sets predated ADR-009 and omitted Ghosted. Fixed by `POST_APPLICATION_STATUSES`.
+- **Follow-ups Due view crash on malformed dates** -- a non-ISO `follow_up_date` no longer breaks the view; the row renders and the bad value is logged. Detail view Save now rejects malformed dates in `date_applied`, `follow_up_date`, `interview_date`, and `last_communication_date` with a format message.
+- **`launch.bat`** now starts from its own folder (`%~dp0`) instead of a hardcoded user-profile path, so it survives profile and drive changes.
+- **Personal paths and project identifiers removed from docs and code** -- example config values, local folder paths, and the OpenBrain project URL in `CHANGESET_ob_import.md`, `CLAUDE.md`, `docs/08_MCP_Server_PRD_v1.4.md`, and the "OB Not Configured" message are replaced with placeholders.
+- **Older QFL entries unreachable by import** -- as OpenBrain grew past 200 thoughts, QFL entries older than the newest 200 thoughts (of any type) fell out of the fetch window and could never be imported. Fixed by the server-side filter and pagination above.
 - **OB import summary diagnostics** -- import results now correctly separate duplicates (already imported entries) from parse failures (malformed content). Previously, both were reported as "parse failures" which created misleading error messages when re-importing existing quick-fit entries.
 
 ---

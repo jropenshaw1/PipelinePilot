@@ -77,4 +77,4 @@ These govern how you interact, not just what you build.
 - `migrations/` — SQL migration files (001: quick_fit_log table, 002: ob_thought_id column)
 - `queries/quick_fit_queries.sql` — 14 pre-built analytical queries for quick-fit data
 - `docs/` — ADRs and design decisions; read relevant ADRs before proposing structural changes
-- `C:\path\to\GIT_Repo_Private\ob1-extensions\extensions\job-hunt\schema.sql` — reference schema for interviews table (Nate B. Jones OB1)
+- `extensions/job-hunt/schema.sql` in the private ob1-extensions repo — reference schema for interviews table (Nate B. Jones OB1)

@@ -6,7 +6,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import config
@@ -15,6 +15,7 @@ import filesystem
 import fit_analysis_engine
 import ob_bridge
 from models import (
+    POST_APPLICATION_STATUSES,
     APP_NAME,
     APP_VERSION,
     STATUS_VALUES,
@@ -649,13 +650,13 @@ class PipelinePilotApp(ctk.CTk):
 
         ctk.CTkLabel(
             fu_inner,
-            text="Auto-set follow-up date this many days after application:",
+            text="Auto-set follow-up date this many days after application (then snapped to the next Monday):",
             text_color=C_TEXT,
             font=ctk.CTkFont(size=12),
         ).pack(anchor="w", pady=(0, 8))
 
         self._followup_var = ctk.StringVar(
-            value=str(self.cfg.get("follow_up_offset_days", 14))
+            value=str(config.get_follow_up_offset_days())
         )
         ctk.CTkEntry(
             fu_inner,
@@ -1243,7 +1244,7 @@ class PipelinePilotApp(ctk.CTk):
             messagebox.showwarning(
                 "OB Not Configured",
                 "Add your OpenBrain Supabase URL and key in Settings.\n\n"
-                "URL: https://your-project-ref.supabase.co\n"
+                "URL: https://<your-project-ref>.supabase.co\n"
                 "Key: your service_role JWT",
             )
             return
@@ -1585,8 +1586,7 @@ class PipelinePilotApp(ctk.CTk):
             ).pack(side="left", padx=4)
 
         # Mark Applied button (only if not already Applied or beyond)
-        applied_statuses = {"Applied", "In Review", "Interviewing", "Offer", "Closed", "Rejected"}
-        if opp.get("status") not in applied_statuses:
+        if opp.get("status") not in POST_APPLICATION_STATUSES:
             all_checked = (
                 opp.get("jfa_completed", 0) == 1
                 and opp.get("cl_reviewed", 0) == 1
@@ -1616,8 +1616,7 @@ class PipelinePilotApp(ctk.CTk):
     def _mark_applied(self, folder_name: str):
         """One-click: set status=Applied, date_applied=today, follow_up=today+offset."""
         today_str = date.today().isoformat()
-        offset = self.cfg.get("follow_up_offset_days", 30)
-        follow_up = (date.today() + timedelta(days=offset)).isoformat()
+        follow_up = database.initial_follow_up(date.today()).isoformat()
         database.update_opportunity(self.db_path, folder_name, {
             "status": "Applied",
             "date_applied": today_str,
@@ -2077,8 +2076,7 @@ class DetailWindow(ctk.CTkToplevel):
         self._field_check(main, "Resume reviewed", "resume_reviewed")
 
         # Mark Applied one-click (only if not already Applied or beyond)
-        applied_statuses = {"Applied", "In Review", "Interviewing", "Offer", "Closed", "Rejected"}
-        if opp.get("status") not in applied_statuses:
+        if opp.get("status") not in POST_APPLICATION_STATUSES:
             mark_btn = ctk.CTkButton(
                 main,
                 text="Mark Applied",
@@ -2208,8 +2206,7 @@ class DetailWindow(ctk.CTkToplevel):
             # Also auto-fill follow_up_date if empty
             follow_up_var = self._fields.get("follow_up_date")
             if follow_up_var and not follow_up_var.get().strip():
-                offset = self.cfg.get("follow_up_offset_days", 30)
-                follow_up_str = (date.today() + timedelta(days=offset)).isoformat()
+                follow_up_str = database.initial_follow_up(date.today()).isoformat()
                 follow_up_var.set(follow_up_str)
 
     # ── Actions ───────────────────────────────
@@ -2241,15 +2238,8 @@ class DetailWindow(ctk.CTkToplevel):
         if updates.get("status") == "Applied" and not updates.get("date_applied"):
             updates["date_applied"] = date.today().isoformat()
 
-        # FR-18: Handle follow-up auto-set
-        if updates.get("status") == "Applied" and updates.get("date_applied"):
-            if not updates.get("follow_up_date"):
-                try:
-                    applied = date.fromisoformat(updates["date_applied"])
-                    offset = self.cfg.get("follow_up_offset_days", 30)
-                    updates["follow_up_date"] = (applied + timedelta(days=offset)).isoformat()
-                except ValueError:
-                    pass
+        # FR-18: follow_up_date auto-set is handled by database.update_opportunity()
+        # (ADR-010: next_monday(date_applied + live config offset)).
 
         database.update_opportunity(self.db_path, self.folder_name, updates)
         messagebox.showinfo("Saved", "Changes saved successfully.")
@@ -2258,8 +2248,7 @@ class DetailWindow(ctk.CTkToplevel):
     def _mark_applied_from_detail(self):
         """One-click Mark Applied from the detail view."""
         today_str = date.today().isoformat()
-        offset = self.cfg.get("follow_up_offset_days", 30)
-        follow_up = (date.today() + timedelta(days=offset)).isoformat()
+        follow_up = database.initial_follow_up(date.today()).isoformat()
 
         # Also save any pending checkbox state before marking applied
         updates = {

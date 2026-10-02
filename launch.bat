@@ -1,3 +1,3 @@
 @echo off
-cd \path\to\Git_Repo_Public\PipelinePilot
+cd /d "%~dp0"
 start python pipelinepilot.py

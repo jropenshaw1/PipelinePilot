@@ -46,6 +46,27 @@ def save_config(config: dict) -> None:
         json.dump(config, f, indent=2)
 
 
+def get_follow_up_offset_days(config_path: Path = None) -> int:
+    """Return the follow-up offset in days, read fresh from the config file.
+
+    This is the ONLY place the offset is resolved (ADR-010). It re-reads
+    pipelinepilot.config on every call, so a change saved in Settings is
+    picked up immediately by the desktop app and by a running MCP server,
+    with no restart. Falls back to DEFAULT_FOLLOW_UP_OFFSET_DAYS when the
+    file or key is missing, or the value is not a whole number >= 1.
+    """
+    path = config_path or CONFIG_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            value = json.load(f).get("follow_up_offset_days")
+        offset = int(value)
+        if offset >= 1:
+            return offset
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        pass
+    return DEFAULT_FOLLOW_UP_OFFSET_DAYS
+
+
 def is_configured(config: dict) -> bool:
     """Return True if a job search root folder has been set."""
     return bool(config.get("job_search_root", "").strip())

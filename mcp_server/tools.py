@@ -20,7 +20,6 @@ import database
 import ob_bridge
 from config import CONFIG_PATH
 from models import (
-    DEFAULT_FOLLOW_UP_OFFSET_DAYS,
     LAST_COMM_TYPES,
     STATUS_VALUES,
     TERMINAL_STATUSES,
@@ -272,15 +271,9 @@ class PipelinePilotTools:
             updates: dict[str, Any] = {"status": "Applied", "date_applied": date_applied}
             if job_url is not None:
                 updates["job_url"] = job_url
-            offset = self.config.get(
-                "follow_up_offset_days", DEFAULT_FOLLOW_UP_OFFSET_DAYS
-            )
-            database.update_opportunity(
-                self.db_path,
-                folder_name,
-                updates,
-                follow_up_offset_days=offset,
-            )
+            # follow_up_date is set by update_opportunity() via
+            # database.initial_follow_up(), which reads the offset live.
+            database.update_opportunity(self.db_path, folder_name, updates)
             return database.get_opportunity(self.db_path, folder_name)
         return self._run(operation)
 

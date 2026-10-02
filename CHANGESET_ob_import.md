@@ -156,7 +156,7 @@ Find the nav_items list and add the OB Import button after it:
             messagebox.showwarning(
                 "OB Not Configured",
                 "Add your OpenBrain Supabase URL and key in Settings.\n\n"
-                "URL: https://your-project-ref.supabase.co\n"
+                "URL: https://<your-project-ref>.supabase.co\n"
                 "Key: your service_role JWT",
             )
             return
@@ -291,9 +291,9 @@ After applying the code changes, add to your `pipelinepilot.config`:
 
 ```json
 {
-  "job_search_root": "C:\\path\\to\\02_Job_Search",
-  "ob_supabase_url": "https://your-project-ref.supabase.co",
-  "ob_supabase_key": "<your service_role JWT from your credential store>"
+  "job_search_root": "C:\\path\\to\\your\\job_search_root",
+  "ob_supabase_url": "https://<your-project-ref>.supabase.co",
+  "ob_supabase_key": "<your service_role JWT>"
 }
 ```
 

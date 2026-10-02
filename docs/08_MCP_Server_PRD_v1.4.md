@@ -132,7 +132,7 @@ The Claude Desktop config entry points to the server entry point:
   "mcpServers": {
     "pipelinepilot": {
       "command": "python",
-      "args": ["C:\\path\\to\\Git_Repo_Public\\PipelinePilot\\mcp_server\\server.py"],
+      "args": ["C:\\path\\to\\PipelinePilot\\mcp_server\\server.py"],
       "env": {}
     }
   }
