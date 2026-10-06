@@ -173,6 +173,14 @@ def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
         if migration_008.exists():
             conn.executescript(migration_008.read_text())
 
+    # Migration 010: add job_url to quick_fit_log (ADR-012).
+    # Must run AFTER 008 — 008's table rebuild copies an explicit column list
+    # and would drop job_url on a fresh install if it were added earlier.
+    try:
+        conn.execute("SELECT job_url FROM quick_fit_log LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE quick_fit_log ADD COLUMN job_url TEXT")
+
 
 def create_opportunity(db_path: Path, record: dict) -> None:
     """FR-06: Create record simultaneously with folder creation."""
@@ -666,9 +674,11 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
 
     # Create folder with pre-populated JD (skip if folder already exists)
     artifact_text = entry.get("opportunity_artifact") or ""
+    job_url = entry.get("job_url") or None
     if not folder_on_disk:
         filesystem.create_opportunity_folder_with_jd(
-            job_search_root, folder_name, company, role, artifact_text
+            job_search_root, folder_name, company, role, artifact_text,
+            job_url=job_url,
         )
 
     # Build and insert opportunity record
@@ -676,6 +686,7 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
         "folder_name": folder_name,
         "company_name": company,
         "role_title": role,
+        "job_url": job_url,
         "source": source,
         "location_type": loc_type,
         "location_city": loc_city,

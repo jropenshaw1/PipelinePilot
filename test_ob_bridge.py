@@ -211,3 +211,21 @@ class TestParseObThought:
         }
         result = parse_ob_thought(thought)
         assert result is None
+
+    # ── ADR-012: job_url carried through import ──
+
+    def test_job_url_carried_into_record(self):
+        content = JOBGETHER_CONTENT.replace(
+            "role_title: Director, Cloud Engineering & Operations, FinOps\n",
+            "role_title: Director, Cloud Engineering & Operations, FinOps\n"
+            "job_url: https://jobs.example.com/jobs/123?lang=en-us&src=LinkedIn\n",
+        )
+        record = parse_ob_thought({"id": "url-test", "content": content})
+        assert record is not None
+        # partition on the first colon keeps the URL's own "https:" intact
+        assert record["job_url"] == "https://jobs.example.com/jobs/123?lang=en-us&src=LinkedIn"
+
+    def test_missing_job_url_still_imports(self):
+        record = parse_ob_thought({"id": "no-url-test", "content": JOBGETHER_CONTENT})
+        assert record is not None
+        assert "job_url" not in record

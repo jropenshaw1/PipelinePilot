@@ -47,6 +47,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Database Migration
 
+- **Migration 010** (idempotent, inline in `migrate_add_quick_fit_log`, runs after 008): adds `job_url TEXT` to `quick_fit_log` (ADR-012).
+- **`migrations/backfill_job_url_from_ob.py`** (one-time, manual): re-reads `[quick-fit-log]` blocks from OpenBrain and fills empty `quick_fit_log.job_url` (matched on `ob_thought_id`) and empty `opportunities.job_url` for promoted entries (matched on `promoted_folder_name`). Never overwrites an existing URL. Dry run by default; `--apply` writes after taking a timestamped backup.
 - **Migration 007** (idempotent, inline in `migrate_add_quick_fit_log`): adds `archived INTEGER NOT NULL DEFAULT 0` column to `quick_fit_log` table.
 - **Migration 009** (idempotent, `migrate_add_posting_status_log`): adds `posting_status_log TEXT` to `opportunities`.
 - **`migrations/migrate_action_items_to_posting_status_log.py`** (one-time, manual): relocates STILL POSTED trails and GHOSTED markers from `action_items` to `posting_status_log` and status, normalizing dates to ISO 8601. Dry run by default; `--apply` writes after taking a timestamped backup. Records that already have `posting_status_log` data are skipped.
@@ -54,6 +56,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Job URL lost between quick-fit and pipeline** (ADR-012) -- the `job_url` line in every `[quick-fit-log]` block was parsed but dropped by `parse_ob_thought()`, `quick_fit_log` had no column for it, and `promote_quick_fit()` never passed it on. It is now carried from OB import through promote into `opportunities.job_url` and the `Job URL:` line of the JD file. `job_url` remains optional at import, so older entries without it still import.
 - **Pursuit Tracker now includes Capturing status** -- Pursuit Tracker previously only queried Analyzing and Pursuing statuses, so newly promoted or manually captured opportunities (which enter as Capturing) were invisible. All three pre-application statuses (Capturing, Analyzing, Pursuing) are now included, matching the intended workflow: every opportunity is tracked from first entry through Applied.
 - **Follow-up offset ignored by the desktop app** -- five UI paths (Mark Applied from the Pursuit Tracker, Mark Applied from Detail view, status-change auto-fill, and two in Save) computed follow-up dates themselves with a hardcoded 30-day fallback and no Monday snap. Changing the offset in Settings had no reliable effect, and desktop-set dates disagreed with MCP-set dates. All paths now call `database.initial_follow_up()`.
 - **Follow-up offset change required MCP server restart** -- the server read the offset from config loaded at startup. It now reads it live through `config.get_follow_up_offset_days()`.

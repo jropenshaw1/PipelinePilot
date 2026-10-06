@@ -1,7 +1,7 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
-**Version:** 1.1
-**Date:** August 7, 2026
+**Version:** 1.2
+**Date:** October 6, 2026
 **Author:** Jonathan Openshaw
 **Standard:** Michael Nygard ADR Format
 **Status:** Approved
@@ -9,6 +9,7 @@
 **Change Log:**
 - **v1.0** (March 7–12, 2026) — ADR-001 through ADR-008
 - **v1.1** (August 7, 2026) — ADR-009 (Posting Status Log, Action Items Scope, Ghosted Status), ADR-010 (Follow-Up Date Standardization), ADR-011 (Multi-Select Status Filtering)
+- **v1.2** (October 6, 2026) — ADR-012 (Carry job_url Through OB Import and Promote)
 
 ---
 
@@ -398,6 +399,45 @@ def next_monday(reference_date: date) -> date:
 
 ---
 
+## ADR-012: Carry job_url Through OB Import and Promote
+
+**Date:** October 6, 2026
+**Status:** Accepted
+
+### Context
+
+The quick-fit skill requires `job_url` on every `[quick-fit-log]` block, and the data dictionary (v1.1) makes `job_url` required at capture. In practice the URL never reached a promoted opportunity. It was lost at three points:
+
+1. `ob_bridge.parse_ob_thought()` parsed every `key: value` line, but built the SQLite record from a fixed field list that did not include `job_url`.
+2. The `quick_fit_log` table had no `job_url` column, so there was nowhere to store it.
+3. `database.promote_quick_fit()` built the opportunity record and JD file without a URL, so the Job URL field on every promoted opportunity started empty.
+
+The URL had to be re-pasted by hand, usually at application time.
+
+### Decision
+
+Store `job_url` on `quick_fit_log` (migration 010) and carry it end to end: OB block → `parse_ob_thought()` → `quick_fit_log.job_url` → `promote_quick_fit()` → `opportunities.job_url` and the `Job URL:` line of the JD file.
+
+- `job_url` stays **optional at import**. Entries written before the capture rule still import; a missing URL is not a parse failure.
+- Migration 010 runs **after** migration 008 in `migrate_add_quick_fit_log()`. Migration 008 rebuilds the table from an explicit column list and would drop `job_url` on a fresh install if the column were added first.
+- A one-time script, `migrations/backfill_job_url_from_ob.py`, fills `job_url` for entries imported before this fix by re-reading their OB blocks (matched on `ob_thought_id`) and, for promoted entries, the linked opportunity (matched on `promoted_folder_name`). **Existing values are never overwritten.** A URL already in PipelinePilot was most likely pasted by hand at application time and is treated as authoritative. Dry run by default; `--apply` takes a timestamped backup first.
+
+### Alternatives Considered
+
+- **Re-read OB at promote time instead of storing the URL.** Rejected: promote would depend on OpenBrain being reachable and on the thought still existing, and `quick_fit_log` rows would remain incomplete for queries and review.
+- **Make `job_url` required at import.** Rejected: every pre-rule entry would become a parse failure on re-import, and recruiter-sourced roles with no public posting would fail. Enforcement stays at capture.
+- **Backfill that overwrites existing URLs with the OB value.** Rejected: manual entries made at application time are newer and more accurate than the capture-time URL.
+
+### Consequences
+
+- `quick_fit_log` gains `job_url TEXT` (additive, nullable). `opportunities` schema is unchanged.
+- `filesystem.create_opportunity_folder_with_jd()` and `_create_blank_jd()` accept an optional `job_url`.
+- New tests in `test_ob_bridge.py` cover a block with and without `job_url`.
+- Promoted opportunities open with the posting URL already filled in.
+
+---
+
 *ADRs 001–007 produced from a structured requirements interview and cross-platform AI design session (Claude + ChatGPT) conducted March 7, 2026.*
 *ADR-008 added March 12, 2026, following several days of production use.*
 *ADRs 009–011 added August 7, 2026, driven by follow-up maintenance skill design work and data analysis of all 197 pipeline records.*
+*ADR-012 added October 6, 2026, after tracing why job URLs captured at quick-fit never reached promoted opportunities.*

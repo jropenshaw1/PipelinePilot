@@ -93,10 +93,12 @@ def create_opportunity_folder_with_jd(
     company_name: str,
     role_title: str,
     artifact_text: str,
+    job_url: str | None = None,
 ) -> Path:
     """
     Create Company_Role folder with pre-populated JD from quick-fit artifact.
     If artifact_text is empty, falls back to blank JD template.
+    job_url, when present, is written to the JD header (ADR-012).
     """
     folder_path = Path(job_search_root) / folder_name
     folder_path.mkdir(parents=True, exist_ok=True)
@@ -112,17 +114,18 @@ def create_opportunity_folder_with_jd(
         jd_path.write_text(
             f"Job Description — {display_name}\n"
             f"{'=' * len('Job Description — ' + display_name)}\n\n"
+            f"Job URL: {job_url or ''}\n\n"
             f"--- Job Description ---\n\n"
             f"{artifact_text}\n",
             encoding="utf-8",
         )
     else:
-        _create_blank_jd(jd_path, folder_name)
+        _create_blank_jd(jd_path, folder_name, job_url)
 
     return folder_path
 
 
-def _create_blank_jd(jd_path: Path, folder_name: str) -> None:
+def _create_blank_jd(jd_path: Path, folder_name: str, job_url: str | None = None) -> None:
     """
     Create a blank job description text file.
     Data Dictionary §3: JD_Company_Role.txt — required artifact.
@@ -132,7 +135,7 @@ def _create_blank_jd(jd_path: Path, folder_name: str) -> None:
     jd_path.write_text(
         f"Job Description — {display_name}\n"
         f"{'=' * len('Job Description — ' + display_name)}\n\n"
-        "Job URL: \n"
+        f"Job URL: {job_url or ''}\n"
         "Source: \n"
         "Date Discovered: \n"
         "Contact Name: \n"

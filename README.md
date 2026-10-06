@@ -84,7 +84,7 @@ Filesystem-first ensures the system remains durable, inspectable, and recoverabl
 - **Idempotent recovery.** `pipelinepilot rebuild-index` reconstructs the entire SQLite database from the filesystem. Run it once or ten times -- same result.
 - **AI as capture interface.** Quick-fit triage happens conversationally through AI agents, with structured entries written to OpenBrain and imported into PipelinePilot. No manual form entry required.
 
-The Architecture Decision Records document every significant choice, including what was rejected and why. See [`docs/06_ADR_Log_v1.1.md`](docs/06_ADR_Log_v1.1.md).
+The Architecture Decision Records document every significant choice, including what was rejected and why. See [`docs/06_ADR_Log_v1.2.md`](docs/06_ADR_Log_v1.2.md).
 
 ---
 

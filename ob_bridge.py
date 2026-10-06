@@ -220,6 +220,10 @@ def parse_ob_thought(thought: dict) -> Optional[dict]:
     }
 
     # Conditional fields
+    # job_url: required at capture by the quick-fit skill, optional here so
+    # entries written before that rule still import (ADR-012).
+    if qfl.get("job_url"):
+        record["job_url"] = qfl["job_url"]
     if qfl.get("primary_pass_reason"):
         record["primary_pass_reason"] = qfl["primary_pass_reason"]
     if qfl.get("pass_reason_note"):
