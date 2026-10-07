@@ -111,6 +111,27 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def backup_database(db_path: Path, dest: Path) -> Path:
+    """
+    Consistent copy of the database using SQLite's online backup API.
+
+    PipelinePilot runs in WAL mode, so recent commits can live in the
+    -wal side file until a checkpoint. A plain file copy of the main
+    database can miss them; the backup API reads through SQLite and
+    includes them.
+    """
+    src = sqlite3.connect(str(db_path))
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return dest
+
+
 def initialize_database(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.execute(SCHEMA)

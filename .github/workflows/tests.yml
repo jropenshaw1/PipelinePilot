@@ -1,0 +1,18 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Only what the test suite imports. The desktop UI (customtkinter),
+      # fit analysis (anthropic) and MCP server are not under test here.
+      - run: pip install pytest requests PyYAML
+      - run: python -m pytest -v test_ob_bridge.py test_follow_up.py test_job_url.py

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import shutil
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -119,7 +118,15 @@ def migrate(db_path: Path, apply: bool = False) -> int:
         f"{db_path.name}.backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     )
     if apply:
-        shutil.copy2(db_path, backup_path)
+        # SQLite backup API, not a file copy: the database runs in WAL mode
+        # and a copy of the main file alone can miss recent commits.
+        src = sqlite3.connect(db_path)
+        dst = sqlite3.connect(backup_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
         print(f"Backup: {backup_path}")
 
     connection = sqlite3.connect(db_path)

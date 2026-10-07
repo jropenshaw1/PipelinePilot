@@ -11,7 +11,7 @@ most likely pasted by hand at application time and is treated as the newer,
 authoritative value. Only NULL or empty fields are filled.
 
 The command is a dry run unless ``--apply`` is supplied. Apply mode creates a
-timestamped database backup before writing.
+timestamped database backup (SQLite backup API, WAL-safe) before writing.
 
 Run from the repo root:
     python migrations/backfill_job_url_from_ob.py            # dry run
@@ -21,7 +21,6 @@ Run from the repo root:
 from __future__ import annotations
 
 import argparse
-import shutil
 import sqlite3
 import sys
 from datetime import datetime
@@ -139,7 +138,7 @@ def main() -> int:
     conn.close()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup = db_path.with_name(f"{db_path.stem}.backup_{stamp}{db_path.suffix}")
-    shutil.copy2(db_path, backup)
+    database.backup_database(db_path, backup)
     print(f"Backup: {backup}")
 
     conn = sqlite3.connect(str(db_path))
