@@ -276,9 +276,11 @@ def fetch_qfl_thoughts(
 
     headers = {
         "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
         "Accept": "application/json",
     }
+    # Legacy JWT keys also go in Authorization; opaque sb_secret_ keys must not.
+    if supabase_key.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {supabase_key}"
 
     all_thoughts = []
     try:
