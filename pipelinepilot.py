@@ -799,7 +799,7 @@ class PipelinePilotApp(ctk.CTk):
         ctk.CTkLabel(
             ob_inner,
             text="Connect to OpenBrain (Supabase) for quick-fit log import.\n"
-                 "The service_role JWT is retrieved from the configured agent-vault item.",
+                 "The OpenBrain access key is retrieved from the configured agent-vault item.",
             text_color=C_MUTED,
             font=ctk.CTkFont(size=11),
             wraplength=560,

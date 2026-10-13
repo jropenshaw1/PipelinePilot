@@ -37,3 +37,9 @@ def test_mcp_ob_import_fetches_vault_value_for_each_operation(tmp_path, monkeypa
 def test_fit_engine_has_no_legacy_key_file_fallback():
     assert not hasattr(fit_analysis_engine, "_get_api_key")
     assert "ClaudeAPIkey" not in inspect.getsource(fit_analysis_engine)
+
+
+def test_settings_do_not_label_openbrain_key_as_service_role():
+    source = Path(__file__).with_name("pipelinepilot.py").read_text(encoding="utf-8")
+    assert "service_role" not in source
+    assert "Service Role" not in source
