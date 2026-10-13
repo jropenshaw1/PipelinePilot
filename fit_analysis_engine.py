@@ -68,25 +68,6 @@ ANALYSIS_STAGES = [
     ("interview_guide", "Interview Guide",  "Prep questions + strategies"),
 ]
 
-# Default API key location — same as Streamlit version
-_API_KEY_FILENAME = "ClaudeAPIkey.txt"
-
-
-def _get_api_key(job_search_root: str, override_key: str = "") -> str:
-    """Return API key from override, key file, or raise."""
-    if override_key and override_key.strip():
-        return override_key.strip()
-    key_file = Path(job_search_root) / _API_KEY_FILENAME
-    if key_file.exists():
-        return key_file.read_text(encoding="utf-8").strip()
-    raise RuntimeError(
-        f"Claude API key not found.\n\n"
-        f"Expected at: {key_file}\n\n"
-        "Either add ClaudeAPIkey.txt to your job search root folder, "
-        "or set the key in Settings → Anthropic API Key."
-    )
-
-
 # ─────────────────────────────────────────────
 # Personal context skill loader
 # Reads a SKILL.md from disk and strips YAML
