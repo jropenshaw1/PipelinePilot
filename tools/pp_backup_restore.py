@@ -51,7 +51,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "1.3"
+VERSION = "1.4"
 REPO_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_DIR / "pipelinepilot.config"
 DB_NAME = "pipelinepilot.db"
@@ -92,9 +92,33 @@ def iso_utc(ts: float) -> str:
     return dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="seconds")
 
 
+LONG_PREFIX = "\\\\?\\"
+
+
+def L(p) -> Path:
+    """Extended-length form on Windows, so paths over 260 characters work. No-op elsewhere."""
+    if os.name != "nt":
+        return Path(p)
+    s = str(p)
+    if s.startswith(LONG_PREFIX):
+        return Path(s)
+    s = os.path.abspath(s)
+    if s.startswith("\\\\"):  # UNC \\server\share
+        return Path(LONG_PREFIX + "UNC\\" + s[2:])
+    return Path(LONG_PREFIX + s)
+
+
+def unL(p) -> str:
+    """Display form: the path without the extended-length prefix."""
+    s = str(p)
+    if s.startswith(LONG_PREFIX + "UNC\\"):
+        return "\\\\" + s[len(LONG_PREFIX) + 4:]
+    return s[len(LONG_PREFIX):] if s.startswith(LONG_PREFIX) else s
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open(L(path), "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -262,9 +286,9 @@ def confirm(prompt: str, expected: str, assume_yes: bool) -> bool:
 
 def copy_verified(src: Path, dst: Path) -> tuple[str, str, str]:
     """Copy with metadata; verify by hash; one retry. Returns (src_hash, dst_hash, status)."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    L(dst).parent.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
-        shutil.copy2(src, dst)
+        shutil.copy2(L(src), L(dst))
         hs, hd = sha256(src), sha256(dst)
         if hs == hd:
             return hs, hd, "OK"
@@ -374,7 +398,7 @@ def do_backup(args) -> int:
         dirnames.sort()
         for dn in dirnames:
             rel = rel_d / dn
-            (run_dir / "jobsearch" / rel).mkdir(parents=True, exist_ok=True)
+            L(run_dir / "jobsearch" / rel).mkdir(parents=True, exist_ok=True)
             rows.append(dict(category="jobsearch", type="dir", relative_path=rel.as_posix(),
                              source_path=str(d / dn), dest_path=str(run_dir / "jobsearch" / rel),
                              action="mkdir", status="OK", detail=""))
@@ -386,7 +410,7 @@ def do_backup(args) -> int:
             src = d / fn
             dst = run_dir / "jobsearch" / rel
             try:
-                st = src.stat()
+                st = L(src).stat()
                 hs, hd, status = copy_verified(src, dst)
                 detail = ""
             except Exception as e:  # noqa: BLE001
@@ -537,7 +561,7 @@ def do_restore(args) -> int:
 
     def record(r, prod, action, status, sha_prod_before="", sha_after="", detail=""):
         out.append(dict(category=r["category"], type=r["type"], relative_path=r["relative_path"],
-                        source_path=r["dest_path"], dest_path=str(prod), size_bytes=r.get("size_bytes", ""),
+                        source_path=r["dest_path"], dest_path=unL(prod), size_bytes=r.get("size_bytes", ""),
                         mtime_utc=r.get("mtime_utc", ""), sha256_source=r.get("sha256_dest", ""),
                         sha256_dest=sha_after, action=action, status=status,
                         detail=(f"prod_sha_before={sha_prod_before} " if sha_prod_before else "") + detail))
@@ -547,10 +571,10 @@ def do_restore(args) -> int:
                 halted.append(f"{r['category']}/{r['relative_path']}")
 
     def save_pre(r, prod: Path) -> str:
-        target = pre / r["category"] / r["relative_path"]
+        target = L(pre / r["category"] / r["relative_path"])
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(prod, target)
-        return str(target)
+        shutil.copy2(L(prod), target)
+        return unL(target)
 
     for r in selected:
         if halted:
@@ -558,8 +582,8 @@ def do_restore(args) -> int:
                 "Every production file this run replaced, including that one, has its previous "
                 "version in pre_restore/ — see manifest.csv for each file's action.")
             break
-        prod = prod_for[r["category"]](r["relative_path"])
-        bsrc = Path(r["dest_path"])
+        prod = L(prod_for[r["category"]](r["relative_path"]))
+        bsrc = L(r["dest_path"])
         try:
             if r["type"] == "dir":
                 if prod.is_dir():
@@ -591,7 +615,7 @@ def do_restore(args) -> int:
             # 2) only now move stale WAL/SHM aside (they must not be applied to the restored DB)
             moved = []
             for sc in live_sidecars:
-                tgt = pre / "database" / sc.name
+                tgt = L(pre / "database" / sc.name)
                 tgt.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(sc, tgt)
                 moved.append((sc, tgt))
@@ -619,14 +643,14 @@ def do_restore(args) -> int:
                               "WAL/SHM left as they were. Pause OneDrive sync and run again.")
                 continue
             for sc, tgt in moved:
-                log(f"  moved live {sc.name} aside -> {tgt}")
+                log(f"  moved live {sc.name} aside -> {unL(tgt)}")
             after = sha256(prod)
             detail = f"pre_restore_copy={saved}" if saved else "new file"
             if r["category"] == "database":
-                integ, counts = db_check(prod)
+                integ, counts = db_check(Path(unL(prod)))
                 exp = summary_b.get("database", {}).get("row_counts_backup", {})
                 meta_exp = summary_b.get("database", {}).get("meta_backup")
-                meta_ok = meta_exp is None or db_meta(prod) == meta_exp  # older backups lack meta
+                meta_ok = meta_exp is None or db_meta(Path(unL(prod))) == meta_exp  # older backups lack meta
                 detail += f"; integrity={integ}; row_counts_match={counts == exp}; meta_match={meta_ok}"
                 ok = after == r["sha256_dest"] and integ == "ok" and counts == exp and meta_ok
                 log(f"  database restored: integrity={integ}; rows={sum(counts.values())}; match backup={counts == exp}")
