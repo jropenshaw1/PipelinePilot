@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -50,7 +51,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "1.2"
+VERSION = "1.3"
 REPO_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_DIR / "pipelinepilot.config"
 DB_NAME = "pipelinepilot.db"
@@ -141,19 +142,29 @@ def is_inside(child: Path, parent: Path) -> bool:
         return False
 
 
+PP_CMD = re.compile(r"pipelinepilot\.py|mcp_server(?:\.server\b|[\\/]server\.py)|-m\s+mcp_server\b")
+
+
+def _is_claude_desktop(exe: str) -> bool:
+    """claude.exe is Claude Desktop unless it is the Claude Code CLI (~/.local/bin or node_modules).
+    An unknown path counts as Desktop (fail closed)."""
+    low = exe.lower()
+    return not ("\\.local\\bin\\" in low or "node_modules" in low)
+
+
 def running_pipelinepilot() -> tuple[list[str], bool, str, bool]:
     """Return (blocking processes, claude_desktop_running, note, check_ok).
 
-    Blocking = any process whose command line names pipelinepilot.py or
-    mcp_server (whatever launched it), plus any python process whose command
-    line Windows would not show (cannot be ruled out). check_ok is False when
-    the check itself could not run; restore refuses in that case.
+    Blocking = any process whose command line launches pipelinepilot.py or the
+    PipelinePilot MCP server (mcp_server.server / mcp_server\\server.py), whatever
+    launched it, plus any python process whose command line Windows hides.
+    check_ok is False when the check itself could not run; restore refuses then.
     """
     if os.name != "nt":
         return [], False, "process check skipped (not Windows)", True
     ps = (
         "Get-CimInstance Win32_Process | ForEach-Object { "
-        "$_.ProcessId.ToString() + '|' + $_.Name + '|' + $_.CommandLine }"
+        "$_.ProcessId.ToString() + '|' + $_.Name + '|' + $_.ExecutablePath + '|' + $_.CommandLine }"
     )
     try:
         res = subprocess.run(
@@ -164,22 +175,26 @@ def running_pipelinepilot() -> tuple[list[str], bool, str, bool]:
         return [], False, f"process check FAILED: {e.__class__.__name__}", False
     if res.returncode != 0 or not res.stdout.strip():
         return [], False, f"process check FAILED: exit {res.returncode}", False
-    own = {"pp_backup_restore", "pipelinepilotbackupfile", "pipelinepilotrestorefile", "get-ciminstance"}
+    own = ("pp_backup_restore", "pipelinepilotbackupfile", "pipelinepilotrestorefile", "get-ciminstance")
     me = str(os.getpid())
-    hits, claude = [], False
+    hits, desktop = [], []
     for line in res.stdout.splitlines():
         pid, _, rest = line.partition("|")
-        name, _, cmd = rest.partition("|")
-        lname, low = name.lower(), cmd.lower()
-        if pid.strip() == me or any(o in low for o in own):
+        name, _, rest = rest.partition("|")
+        exe, _, cmd = rest.partition("|")
+        pid, lname, low = pid.strip(), name.lower(), cmd.lower()
+        if pid == me or any(o in low for o in own):
             continue
-        if lname == "claude.exe":
-            claude = True
-        if "pipelinepilot.py" in low or "mcp_server" in low:
-            hits.append(f"[{pid.strip()}] {name}: {cmd.strip()[:160]}")
+        if lname == "claude.exe" and _is_claude_desktop(exe):
+            desktop.append(f"[{pid}] {exe or '(path hidden)'}")
+        if PP_CMD.search(low):
+            hits.append(f"[{pid}] {name}: {cmd.strip()[:160]}")
         elif lname.startswith("python") and not cmd.strip():
-            hits.append(f"[{pid.strip()}] {name}: (command line hidden; cannot rule out PipelinePilot)")
-    return hits, claude, "process check ran", True
+            hits.append(f"[{pid}] {name}: (command line hidden; cannot rule out PipelinePilot)")
+    note = "process check ran"
+    if desktop:
+        note += f"; Claude Desktop processes: {len(desktop)} (e.g. {desktop[0]}) - quit it from the system tray"
+    return hits, bool(desktop), note, True
 
 
 def db_check(path: Path, read_only: bool = False) -> tuple[str, dict]:
