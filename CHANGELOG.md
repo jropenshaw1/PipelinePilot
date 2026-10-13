@@ -11,7 +11,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`test_job_url.py`** -- 9 end-to-end tests for ADR-012: fresh-install migration order (010 survives 008's table rebuild), OB thought → import → promote → `opportunities.job_url` and the JD `Job URL:` line, pre-ADR entries without a URL, and the backfill (dry run writes nothing, apply fills only empty values, a manual URL is never overwritten, a missing opportunity record is skipped), plus a test proving the backup includes WAL-resident rows.
+- **`test_job_url.py`** -- 5 end-to-end tests for ADR-012: fresh-install migration order (010 survives 008's table rebuild), OB thought → import → promote → `opportunities.job_url` and the JD `Job URL:` line, pre-ADR entries without a URL, and a test proving the backup includes WAL-resident rows.
+- **Agent-vault credential bridge** (ADR-013) -- `vault.py` retrieves OpenBrain and Anthropic credentials from Dashlane CLI item IDs on each operation, opens a visible authentication window when needed, scrubs inherited credential variables, and writes value-free audit events to per-process log files.
+- **Agent-vault Settings controls** -- non-secret account, item-ID, and optional `dcli` path fields plus title-only vault-access tests for both credential items.
+- **ADR-013 regression tests** -- state-table, GUID validation, log-safety, retry/window-guard, integration, HTTP-failure, and legacy-reader coverage.
 - **GitHub Actions CI** (`.github/workflows/tests.yml`) -- runs the test suite on every push and pull request (Python 3.12).
 - **`database.backup_database()`** -- consistent database copy via SQLite's online backup API.
 - **PipelinePilot MCP server** (`mcp_server/`) -- local stdio MCP server exposing the SQLite pipeline to Claude Desktop as a thin wrapper over `database.py`, `config.py`, and `ob_bridge.py`. Read tools: `pipi_query_pipeline`, `pipi_get_opportunity`, `pipi_get_dashboard`, `pipi_get_followups_due`, `pipi_search_opportunities`. Write tools: `pipi_update_status`, `pipi_update_followup`, `pipi_log_communication`, `pipi_update_contact`, `pipi_close_opportunity`, `pipi_archive_opportunity`, `pipi_mark_applied`, `pipi_log_still_posted`, `pipi_add_interview`. Import: `pipi_run_ob_import`. SQL statements are traced to stderr (stdout is reserved for JSON-RPC). `PIPI_MCP_DB_PATH` points the server at a disposable test database. Spec: `docs/08_MCP_Server_PRD_v1.4.md`. Setup: `mcp_server/README.md`.
@@ -47,11 +50,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **ob_bridge.py enum sync** -- `VALID_ROLE_LEVELS` now includes `Sr. Manager`; `VALID_SOURCE_CHANNELS` now includes `company-site`. Aligns parser validation with quick-fit skill v1.3.1 and migration 008 CHECK constraints.
 - **ob_bridge.py alias normalization** -- `parse_qfl_block` now normalizes known AI-generated enum variants before validation via `PASS_REASON_ALIASES` and `ROLE_LEVEL_ALIASES` maps. Aliases like `domain-mismatch` → `wrong-domain`, `Senior Manager` → `Sr. Manager`, etc. are resolved with info-level logging. Unknown values still fail validation. Root cause: AI agents generating close-but-wrong enum values (e.g. `domain-mismatch` instead of `wrong-domain`) caused silent parse failures on OB import.
 - **quick_fit_capture.py enum sync** -- `ROLE_LEVELS` now includes `Sr. Manager`; `SOURCE_CHANNELS` now includes `company-site`. Aligns Streamlit capture form with ob_bridge and migration 008 CHECK constraints.
+- **Runtime credential source** (ADR-013) -- the desktop OpenBrain importer, desktop Job Fit Analyst, MCP OpenBrain importer, and Settings test now use the same agent-vault helper and fixed caller vocabulary.
+- **OpenBrain failures** -- non-success HTTP responses now raise a safe, visible error instead of being treated as an empty result; response bodies are not logged or displayed.
+- **Settings terminology** -- OpenBrain credential labels are provider-neutral and no longer expose the previous key type.
+
+### Removed
+
+- **Plaintext credential readers** (ADR-013) -- removed all runtime reads of `ob_supabase_key`, `OB_SUPABASE_KEY_KEY`, `anthropic_api_key`, and the `ClaudeAPIkey` file fallback.
+- **`migrations/backfill_job_url_from_ob.py`** -- retired after the one-time ADR-012 backfill was applied and verified; recover it from Git history if ever needed.
 
 ### Database Migration
 
 - **Migration 010** (idempotent, inline in `migrate_add_quick_fit_log`, runs after 008): adds `job_url TEXT` to `quick_fit_log` (ADR-012).
-- **`migrations/backfill_job_url_from_ob.py`** (one-time, manual): re-reads `[quick-fit-log]` blocks from OpenBrain and fills empty `quick_fit_log.job_url` (matched on `ob_thought_id`) and empty `opportunities.job_url` for promoted entries (matched on `promoted_folder_name`). Never overwrites an existing URL. Dry run by default; `--apply` writes after taking a timestamped backup.
 - **Migration 007** (idempotent, inline in `migrate_add_quick_fit_log`): adds `archived INTEGER NOT NULL DEFAULT 0` column to `quick_fit_log` table.
 - **Migration 009** (idempotent, `migrate_add_posting_status_log`): adds `posting_status_log TEXT` to `opportunities`.
 - **`migrations/migrate_action_items_to_posting_status_log.py`** (one-time, manual): relocates STILL POSTED trails and GHOSTED markers from `action_items` to `posting_status_log` and status, normalizing dates to ISO 8601. Dry run by default; `--apply` writes after taking a timestamped backup. Records that already have `posting_status_log` data are skipped.
@@ -59,7 +69,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Migration backups could miss recent writes** -- `backfill_job_url_from_ob.py` and `migrate_action_items_to_posting_status_log.py` backed up with `shutil.copy2`, which copies only the main database file. PipelinePilot runs in WAL mode, so commits not yet checkpointed live in the `-wal` file and were absent from the backup. Both now use SQLite's backup API. Found in an external engineering review (Gee, 2026-10-06).
+- **Migration backups could miss recent writes** -- one-time migration scripts backed up with `shutil.copy2`, which copies only the main database file. PipelinePilot runs in WAL mode, so commits not yet checkpointed live in the `-wal` file and were absent from the backup. The remaining action-items migration now uses SQLite's backup API. Found in an external engineering review (Gee, 2026-10-06).
 - **Job URL lost between quick-fit and pipeline** (ADR-012) -- the `job_url` line in every `[quick-fit-log]` block was parsed but dropped by `parse_ob_thought()`, `quick_fit_log` had no column for it, and `promote_quick_fit()` never passed it on. It is now carried from OB import through promote into `opportunities.job_url` and the `Job URL:` line of the JD file. `job_url` remains optional at import, so older entries without it still import.
 - **Pursuit Tracker now includes Capturing status** -- Pursuit Tracker previously only queried Analyzing and Pursuing statuses, so newly promoted or manually captured opportunities (which enter as Capturing) were invisible. All three pre-application statuses (Capturing, Analyzing, Pursuing) are now included, matching the intended workflow: every opportunity is tracked from first entry through Applied.
 - **Follow-up offset ignored by the desktop app** -- five UI paths (Mark Applied from the Pursuit Tracker, Mark Applied from Detail view, status-change auto-fill, and two in Save) computed follow-up dates themselves with a hardcoded 30-day fallback and no Monday snap. Changing the offset in Settings had no reliable effect, and desktop-set dates disagreed with MCP-set dates. All paths now call `database.initial_follow_up()`.

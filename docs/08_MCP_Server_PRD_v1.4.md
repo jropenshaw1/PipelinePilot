@@ -124,6 +124,8 @@ The MCP server reuses the existing `config.py` module rather than parsing config
 - `server.py` resolves the repository root via `Path(__file__).resolve().parents[1]` and inserts it into `sys.path` before importing project modules, making imports independent of the working directory Claude Desktop launches from.
 - `config.load_config()` returns the merged configuration dict. `config.CONFIG_PATH` is anchored to `config.py`'s own directory, so it resolves correctly regardless of subprocess working directory.
 - The database path is derived via `database.get_db_path(config["job_search_root"])`.
+- OpenBrain configuration contains only the project URL and agent-vault references: `agent_vault_account`, `ob_key_vault_id`, and optional `dcli_path`. `pipi_run_ob_import` calls `vault.get_secret()` for each operation using caller `mcp-ob-import`; no credential value is stored in config.
+- Vault access writes value-free audit events to per-process files under `logs/`. If the vault is locked or logged out, the helper opens a visible authentication terminal and returns a safe retry message rather than prompting over MCP stdio.
 
 The Claude Desktop config entry points to the server entry point:
 
@@ -185,7 +187,7 @@ Each tool maps to one or more existing `database.py` functions. Tools are groupe
 
 | Tool Name | Description | Wraps | Parameters |
 |---|---|---|---|
-| `pipi_run_ob_import` | Trigger OpenBrain bridge import | `ob_bridge.run_import()` | None (reads Supabase creds from config) |
+| `pipi_run_ob_import` | Trigger OpenBrain bridge import | `ob_bridge.run_import()` | None (reads the project URL and vault references from config, then retrieves the credential per operation) |
 
 ## 7. Field-Level Behaviors
 
@@ -388,7 +390,7 @@ All scenarios execute against a disposable copy of the database (`pipelinepilot_
 | 14 | `pipi_search_opportunities` for "Array" | Returns Array Technologies record |
 | 15 | `pipi_log_still_posted` on opp with existing `posting_status_log` STILL POSTED line | Appends today's date pipe-delimited, sets follow_up_date to next Monday |
 | 16 | `pipi_log_still_posted` on opp with null `posting_status_log` | Creates `STILL POSTED: YYYY-MM-DD`, sets follow_up_date to next Monday |
-| 17 | `pipi_run_ob_import` | Executes OB bridge and returns import summary. **Verified on the configuration-error path only** — `ob_supabase_url` and `ob_supabase_key` were empty in the local config at initial build time, so a live import could not run. `ob_bridge.run_import()` is pre-existing code; the MCP wrapper is thin. Live verification deferred pending credential configuration. |
+| 17 | `pipi_run_ob_import` | Executes the OpenBrain bridge through caller `mcp-ob-import` and returns an import summary. Automated tests mock the vault value and verify that the legacy config key is not read. Live unlocked, locked, logged-out, retry, relock, and visible-window cases are covered by the ADR-013 Phase 1 manual-test matrix against the disposable test database. |
 | 18 | `pipi_log_still_posted` then `pipi_close_opportunity(status="Ghosted")` | STILL POSTED dates preserved in `posting_status_log`, `NOT POSTED` entry appended below |
 | 19 | Inspect stdout during any tool invocation | Contains only JSON-RPC protocol messages, no log lines |
 | 20 | Inspect stderr during any write tool invocation | Contains timestamped SQL statement with parameters |

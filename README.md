@@ -256,12 +256,38 @@ Configure your job search root folder on first launch. PipelinePilot creates a `
 
 > **Important:** PipelinePilot's filesystem-first architecture means your job search folder *is* your data. A local-only folder is not sufficient -- your root folder must be inside a cloud-synced directory such as OneDrive, Google Drive, Dropbox, or equivalent. If the files are lost, no database backup can recover them. This is the one infrastructure requirement the tool cannot enforce for you.
 
+### Agent Vault Setup
+
+PipelinePilot retrieves the OpenBrain and Anthropic credentials from a separate Dashlane agent vault at the moment each operation needs them. Secret values do not belong in `pipelinepilot.config`.
+
+1. Install the [Dashlane CLI](https://github.com/Dashlane/dashlane-cli#installation) for Windows and make sure `dcli` is available on `PATH`.
+2. Confirm the installed version with `dcli --version`.
+3. Run `dcli sync` and complete the account registration, verification, and master-password prompts in the visible terminal window. See Dashlane's [authentication guide](https://github.com/Dashlane/dashlane-cli/blob/master/documentation/pages/personal/authentication.mdx).
+4. Find each credential item's ID without printing its password:
+
+   ```powershell
+   dcli p title=<unique-title> -o json | ConvertFrom-Json | Select-Object id, title
+   ```
+
+   Confirm the exact title before copying the ID; the title filter can match more than one item.
+
+Configure these non-secret fields in PipelinePilot Settings:
+
+- `job_search_root` -- cloud-synced job-search folder
+- `ob_supabase_url` -- OpenBrain Supabase project URL
+- `agent_vault_account` -- Dashlane agent-vault login
+- `ob_key_vault_id` -- Dashlane item ID for the OpenBrain credential
+- `anthropic_key_vault_id` -- Dashlane item ID for the Anthropic credential
+- `dcli_path` -- optional full path to `dcli.exe`; leave blank to use `PATH`
+
+"Test vault access" reads and displays item titles only. It never displays or stores the credential values.
+
 ### OpenBrain Integration (Optional)
 
 To enable quick-fit log import from OpenBrain:
 
-1. In PipelinePilot Settings, enter your Supabase URL and service role key
-2. Use the "Import from OB" button to pull quick-fit entries
+1. Complete Agent Vault Setup and enter the OpenBrain URL and vault item ID in Settings.
+2. Use the "Import from OB" button to pull quick-fit entries. If the vault is locked or logged out, PipelinePilot opens a visible terminal for authentication and then retries the operation.
 
 Requires a [Supabase](https://supabase.com) project with the OpenBrain schema. See the OpenBrain MCP server documentation for setup details.
 
