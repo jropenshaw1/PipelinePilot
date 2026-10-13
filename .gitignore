@@ -138,6 +138,7 @@ celerybeat.pid
 launch_local.bat
 pipelinepilot.config
 commit_*.sh
+logs/
 
 # PipelinePilot database — never commit pipeline data
 *.db

@@ -24,6 +24,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import database
+import vault
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -683,7 +684,6 @@ def run_fit_analysis(
     job_search_root: str,
     folder_name: str,
     resume_path: str,
-    api_key: str,           # empty string = fall back to ClaudeAPIkey.txt
     fit_threshold: float,
     on_success,             # callback(result: dict, output_files: list[Path])
     on_error,               # callback(message: str)
@@ -703,7 +703,7 @@ def run_fit_analysis(
             return
 
         try:
-            resolved_key = _get_api_key(job_search_root, api_key)
+            resolved_key = vault.get_secret(vault.ANTHROPIC_KEY_ITEM, "desktop-jfa")
             client = anthropic.Anthropic(api_key=resolved_key)
 
             folder_path = Path(job_search_root) / folder_name
@@ -790,10 +790,13 @@ def run_fit_analysis(
             on_success(result, output_files)
 
         except Exception as e:
+            if isinstance(e, vault.VaultError):
+                on_error(str(e))
+                return
             try:
                 import anthropic
                 if isinstance(e, anthropic.AuthenticationError):
-                    on_error("Invalid API key.\n\nCheck ClaudeAPIkey.txt or Settings → Anthropic API Key.")
+                    on_error("Anthropic rejected the credential retrieved from the agent vault.")
                     return
                 if isinstance(e, anthropic.RateLimitError):
                     on_error("Rate limit reached. Wait a moment and try again.")
