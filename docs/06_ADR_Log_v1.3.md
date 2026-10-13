@@ -1,7 +1,7 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
-**Version:** 1.2
-**Date:** October 6, 2026
+**Version:** 1.3
+**Date:** October 12, 2026
 **Author:** Jonathan Openshaw
 **Standard:** Michael Nygard ADR Format
 **Status:** Approved
@@ -10,6 +10,7 @@
 - **v1.0** (March 7–12, 2026) — ADR-001 through ADR-008
 - **v1.1** (August 7, 2026) — ADR-009 (Posting Status Log, Action Items Scope, Ghosted Status), ADR-010 (Follow-Up Date Standardization), ADR-011 (Multi-Select Status Filtering)
 - **v1.2** (October 6, 2026) — ADR-012 (Carry job_url Through OB Import and Promote)
+- **v1.3** (October 12, 2026) — ADR-013 (Credentials by Vault Reference — No Secrets in pipelinepilot.config)
 
 ---
 
@@ -437,7 +438,163 @@ Store `job_url` on `quick_fit_log` (migration 010) and carry it end to end: OB b
 
 ---
 
+## ADR-013: Credentials by Vault Reference — No Secrets in pipelinepilot.config
+
+**Date:** October 12, 2026
+**Status:** Accepted (Jonathan Openshaw, October 12, 2026). Implementation pending: Phases 0–4 below.
+**Relates to:** security review finding — live API keys stored in plain text in `pipelinepilot.config`; related fixes: Settings labels that called the OpenBrain key a "service_role JWT", and OB import returning an empty list on an authentication failure.
+
+### Context
+
+PipelinePilot holds two live secrets in plain text in `pipelinepilot.config`:
+
+- `ob_supabase_key` — the per-consumer Supabase secret key used to read quick-fit entries from OpenBrain. Full read/write at the database, although PipelinePilot only reads.
+- `anthropic_api_key` — used by the embedded fit analysis engine (JFA).
+
+They are read in four places: the OB import in the desktop app (`pipelinepilot.py`), the MCP server's `run_ob_import` (`mcp_server/tools.py`, from config loaded at server start), the JFA launch check (`pipelinepilot.py`), and `fit_analysis_engine._get_api_key()`, which also falls back to a `ClaudeAPIkey.txt` file in the job search root. Settings shows both values in editable fields.
+
+Both keys already live in a Dashlane "agent vault": a separate Dashlane account that holds only agent and API credentials. A post-hoc security review rated the plaintext config copies as a must-fix finding. Jonathan decided: PipelinePilot fetches both keys from the vault at runtime through `dcli`; programs and agents may call `dcli`, but values are never printed or echoed; OneDrive (including version history) counts as protected storage, so no rotation is required after the migration.
+
+**Operational constraints set by Jonathan.** PipelinePilot runs the active job search, so the change must carry no risk of downtime or data corruption, with a tested backup and backout plan before the working copy is touched. When the vault needs re-authentication, Jonathan must be prompted to enter the master password. He must be able to see when the keys are retrieved.
+
+**Observed `dcli` behavior (Windows, 2026-10-12).** Lexi's fact-check (2026-10-12) found **no official documentation** for `dcli status` output, or for `dcli read` behavior when locked or missing, or its exit codes; `dcli read` console output already changed in v6.2447.0. Everything below is observed on the installed version only. **Tested dcli version: ________ (record with `dcli --version` at Phase 1 start).** After any dcli upgrade, rerun the state-table tests before the next OB import or JFA run. Dashlane documents that `dcli` saves the master password in the OS keychain by default; `dcli lock` locks it until the master password is entered again. Documentation does not state session length, idle auto-lock, or forced re-login intervals. Tested on Jonathan's machine:
+- `dcli status` never prompts. Unlocked: `Logged in: Yes`, `Login: <account>`, `Locked: No`. Locked: same with `Locked: Yes`. Logged out: `Logged in: No` (no `Locked` line).
+- Locked: `dcli read …` and `dcli sync` prompt `Please enter your master password:` in the terminal; afterwards reads succeed without prompting.
+- Logged out: `dcli sync` runs the full login in the terminal — account email → a dashlane.com device-registration URL printed in the terminal → token pasted from that page → email/authenticator one-time code → master password. A wrong master password discards the whole login (observed, not documented; harmless because Retry always re-checks status).
+
+**Security model, stated plainly.** While the agent vault is unlocked, any process running as Jonathan's Windows user can read it. The Windows sign-in is the effective lock. The separate agent-only account limits what such access can reach. "Never stored" below means no application-controlled persistence; the value necessarily exists briefly in process memory while a request is made.
+
+### Decision
+
+**1. One credential module.** New `vault.py` is the only code that touches a credential value outside the HTTP request that uses it. `get_secret(item, caller)` runs `dcli status` (no shell, `stdin` closed, stdout/stderr captured, 10-second timeout), parses it, and evaluates these rows **in order; the first match wins**. Anything not matched fails closed.
+
+| # | `dcli status` result | Action |
+|---|---|---|
+| 1 | `dcli` not found | `VaultError("dcli-missing")` |
+| 2 | Non-zero exit, timeout, unparseable output, or any field appearing twice with different values | No read. `VaultError("status-unrecognized")` |
+| 3 | `Logged in: No` (`Locked` and `Login` not required; ignored if present) | Open unlock window (§2); `VaultError("not-logged-in")` |
+| 4 | `Logged in: Yes` but `Locked` or `Login` missing | No read. `VaultError("status-unrecognized")` |
+| 5 | `Logged in: Yes`, `Login` does **not** match the configured account (locked **or** unlocked) | No read, no window. `VaultError("wrong-account")`: "dcli is logged in to a different Dashlane account. Run `dcli logout`, then Retry to log in to the agent vault." Wrong account wins over locked so the window never unlocks the wrong vault. |
+| 6 | `Logged in: Yes`, `Login` matches, `Locked: Yes` | Open unlock window (§2); `VaultError("locked")` |
+| 7 | `Logged in: Yes`, `Login` matches, `Locked: No` | Append `attempt`; `dcli read`; append `retrieved`; return value |
+
+Parsing: field names and Yes/No values compared case-insensitively after trimming; `Login` compared to the configured account email after trimming and lower-casing.
+
+**Read by item ID, not title.** Dashlane documents that `dl://<title>` returns the *first* item with that title, so a duplicate or renamed item could silently hand over the wrong key. Config therefore stores the Dashlane **item ID** for each key, and reads use `dcli read dl://<item-id>/password` (ID lookup is also faster). Test vault access shows each item's title (`dl://<item-id>/title`) for confirmation, never the secret.
+
+**Clean environment for dcli.** `vault.py` runs every `dcli` command with `DASHLANE_SERVICE_DEVICE_KEYS` and `DASHLANE_ENROLLED_TEAM_DEVICE_KEYS` removed from the child environment, so a stray variable cannot switch dcli to a different account or device mode.
+
+**Version on record.** The first `get_secret` call in each process runs `dcli --version` and logs it (event `dcli-version`, version string only), so an upgrade is visible in the access log next to any change in behavior.
+
+**Account binding.** New non-secret config setting `agent_vault_account` (the agent account's email). It is required: if empty, `get_secret` raises `VaultError("not-configured")` without calling `dcli read`. It is also printed in the unlock window header.
+
+**Retry never trusts the window.** PipelinePilot never treats the unlock window's exit code as proof of authentication. Retry (desktop dialog) or a repeated MCP call reruns `get_secret` from the top, starting with `dcli status`. A cancelled window, a failed sync, or a wrong master password therefore simply shows up as the same state on the next status check.
+
+**2. One unlock window for both states.** When the vault is locked or logged out, PipelinePilot opens a visible console window titled *Unlock agent vault* running a small helper, `unlock_window.py`. The helper sets its console title to *Unlock agent vault* itself, then prints a header — the agent account email to use, and the login steps in order (email → open the printed dashlane.com link → paste the token → one-time code → master password; locked vaults ask for the master password only) — then runs `dcli sync` attached to that console. **If `dcli sync` exits 0, the helper exits and the window closes by itself.** If it exits non-zero, the helper prints "Login did not complete — press Enter to close this window, then click Retry in PipelinePilot" and waits for Enter. The helper never captures `dcli` output and never reads a credential. The master password, token and one-time code are typed into `dcli` only; no PipelinePilot code sees them. No custom form.
+
+The desktop app shows: "Complete the steps in the Unlock agent vault window, then click Retry." MCP callers receive the same text as a tool error and relay it. **No window storms:** within one process, `vault.py` keeps the handle of the helper it launched. While that helper is still running, Retry launches no second window and raises "The Unlock agent vault window is still open. Finish there, or press Enter to close it, then Retry." Because a successful helper exits on its own, an old window can never block the unlock window for a later relock. (Separate processes — the desktop app and the MCP server — could each open one; accepted.) If the window cannot be launched, the error says so and tells Jonathan to run `dcli sync` in a terminal.
+
+**3. Values are never printed or stored.** `get_secret()` captures `dcli read` stdout/stderr (never inherits the console), never logs them, never formats the process object or raw output into any message, and raises `VaultError` with `from None` so no captured output travels in a chained exception. Errors name the item and a fixed failure class only. The value is never written to disk, environment variables or the config file, and is not cached across operations. Each OB import (desktop or MCP) and each JFA run calls `get_secret` once and passes the value straight to the request client. **Test vault access** discards returned values. HTTP/SDK debug logging (`httpx`, `anthropic`, `supabase`) stays at WARNING or above so request headers are never logged.
+
+**4. Vault access log — the record is a precondition.** In `logs/` in the PipelinePilot folder (gitignored), one file per process so the desktop app and the MCP server never write to the same file: `vault_access_desktop.log` and `vault_access_mcp.log` (Windows gives no cross-process atomic-append guarantee; separate files remove the question without locking code). One line per event, written with a single write and flushed: ISO timestamp, item name, caller, event. Never a value.
+- Callers (fixed list): `desktop-ob-import`, `desktop-jfa`, `mcp-ob-import`, `settings-test`.
+- Events (fixed list): `dcli-version`, `attempt`, `retrieved`, `locked`, `not-logged-in`, `wrong-account`, `unlock-window-opened`, `status-unrecognized`, `item-failed`, `timeout`, `dcli-missing`, `not-configured`.
+- Ordering: `attempt` is appended before `dcli read`; `retrieved` is appended after a successful read and **before** the value is returned. If either append fails (missing or unwritable `logs/`), `get_secret` discards the value and raises `VaultError("log-unwritable")` — no key is ever handed out without a record.
+- Semantics, named accurately: the log proves **retrieval from the vault by a named caller**. It does not record whether the downstream request then succeeded; because keys are fetched once per OB import or JFA run, retrieval time is the operation time. It also shows how often re-authentication is actually needed.
+
+**5. Config holds names, not values.** `pipelinepilot.config` gains `agent_vault_account`, `ob_key_vault_id` and `anthropic_key_vault_id` (Dashlane item IDs of the two key items; required, no defaults; looked up once in Phase 1), and optional `dcli_path` (default `dcli` on PATH). The code stops reading `ob_supabase_key` and `anthropic_api_key` and never falls back to them. They are removed from `DEFAULTS`; whether they survive in the file during burn-in no longer matters for backout (see Backout).
+
+**6. Failures are visible.** In `ob_bridge.fetch_qfl_thoughts()`, a non-200 response from Supabase raises an error instead of returning `[]`, so a bad vault credential cannot masquerade as an empty import. Shipped as its own commit with its own test, separately revertible.
+
+**7. Remove the `ClaudeAPIkey.txt` fallback** from `fit_analysis_engine._get_api_key()` and the JFA launch check.
+
+**8. Settings.** The two key fields are replaced by `agent_vault_account`, the two vault item IDs, and a **Test vault access** button that runs the full flow for both items and reports `OK` or the failure class, never a value. Labels and the "OB Not Configured" message stop referring to a "service_role JWT" — its own commit.
+
+### Rollout, backup and backout
+
+This change touches no database schema and no opportunity folders, but backup and backout are planned for the corruption case anyway, and rehearsed before the working copy is touched. Backups live in the protected OneDrive tree; config backups contain the legacy key values and are deleted in Phase 4.
+
+**The backup set is the only supported database recovery path. OneDrive version history is not one:** it keeps 30 days, a replace-by-rename may not be recorded as a version, and OneDrive can upload a live `.db` and its `-wal` at different moments, so cloud versions of the database may be inconsistent.  is about key exposure, not recovery.
+
+**Before any backup or restore:** be online, or set `00_JobSearch` and `PipelinePilot_Backups` to *Always keep on this device* (cloud-only placeholders download when read; offline reads fail and the run reports FAIL rather than skipping). **Pause OneDrive sync for the duration of a restore** so it cannot hold files open (the restore retries a locked replace three times, then fails safely with production unchanged).
+
+**Phase 0 — Mark the recovery point.** In the working PipelinePilot folder: confirm `git status` is clean; tag the current commit `pre-adr013`.
+
+**Phase 1 — Build, test and rehearse away from the working copy.** Separate checkout on branch `adr-013-vault`, with its own `pipelinepilot.config` pointing at a **copy** of the database and a scratch job search root; MCP tested against the same copy via `PIPI_MCP_DB_PATH`.
+- *Build pass criteria:* automated tests green (see Tests); manual runs in **both** the desktop app and the MCP tool of: unlocked; locked (`dcli lock` first); logged out; wrong password then successful retry; window closed without completing then retry; access log lines correct; sentinel absent everywhere.
+- *Backout rehearsal (on the clone, before cutover):* the backup and restore scripts read paths from the config beside them, so run from the clone checkout they act only on the clone. With the clone stopped: run `PipelinePilotBackupFile.bat`; damage the clone (change the config, delete rows); run `PipelinePilotRestoreFile.bat --only config`, then `--only database`; confirm `RESULT: PASS`, `integrity_check` = `ok` and row counts matching the backup; check out `pre-adr013` in the clone; start the desktop app and the MCP server against the restored clone; read-only smoke test (open pipeline view, list opportunities via MCP). Record the time taken. Cutover does not start until this passes.
+
+**Phase 2 — Cutover, at a quiet time.**
+1. Fully stop PipelinePilot **and** Claude Desktop (which hosts the MCP server); confirm no process holds `pipelinepilot.db`. Pause OneDrive sync until step 2 finishes.
+2. Fresh cutover backup: run `PipelinePilotBackupFile.bat`. It copies the database through SQLite's backup API (WAL contents included), the config, and the job search root; records size, modified time and SHA-256 for every file in `manifest.csv`; runs `PRAGMA integrity_check` and per-table row counts; and writes `BACKUP_COMPLETE` only if every item verified. Cutover continues only on `RESULT: PASS` **and** `VALID FOR CUTOVER: YES` (the tool marks a backup not valid for cutover if PipelinePilot, its MCP server or Claude Desktop was running, or if its process check could not run).
+3. Merge `adr-013-vault` to `main`; pull in the working folder.
+4. Start **PipelinePilot only** (Claude Desktop stays closed, so the MCP server cannot run with incomplete settings). Set and save `agent_vault_account` and the two item names in Settings. Run Test vault access, one OB import, one JFA run.
+5. Start Claude Desktop. Run one MCP OB import. Check the access log for all four operations.
+
+**Stop / backout triggers (Phases 2–3).** Any of: `integrity_check` not `ok`; opportunity row count drops unexpectedly; OB import or JFA fails for a reason other than vault state that Jonathan can clear by unlocking; any key value appears in a log, dialog, error or file; Jonathan's call.
+
+**Backout (any time in Phases 2–3).**
+1. Fully stop PipelinePilot and Claude Desktop; pause OneDrive sync. (The restore refuses to run while either is running, or if it cannot confirm they are stopped.)
+2. `git checkout pre-adr013` in the working folder.
+3. Run `PipelinePilotRestoreFile.bat --only config` and choose the cutover backup. It re-verifies the backup's hashes, saves the current config under `RESTORE_<time>/pre_restore/`, and restores the config that holds the legacy key values. Settings changes made during burn-in are lost — accepted for a 7-day window. If that copy is unusable, re-enter the two values by hand from the Dashlane agent vault.
+4. Restart and smoke test as in the rehearsal (`integrity_check`, row count, pipeline view, one MCP list).
+5. Only if step 4 fails: `PipelinePilotRestoreFile.bat --only database` (run `--dry-run` first). It moves any live `-wal`/`-shm` aside before restoring. This loses opportunity changes made since cutover; note them before restoring and re-enter by hand. The replaced database is kept in `pre_restore/`.
+
+**Phase 3 — Burn-in, 7 days of normal use.** Review `logs/vault_access.log` at the end: every retrieval has a caller; no unexpected callers; re-authentication frequency noted.
+
+**Phase 4 — Completion (Jonathan sign-off required).** Remove `ob_supabase_key` and `anthropic_api_key` from `pipelinepilot.config` by hand; confirm with a count-only key-shape check that the file contains no secret-shaped string; delete the cutover and rehearsal config backups. This closes the one-step code-only rollback: after Phase 4, running `pre-adr013` again needs the keys re-entered by hand from the vault. is then resolved. The `pre-adr013` tag and the DB backups stay.
+
+### Rationale
+
+- One place for each secret (the vault), one module that reads it, nothing written back to disk.
+- `dcli status` gives a prompt-free state probe, so the program never hangs on an unanswerable prompt; the state table makes every outcome explicit and anything unexpected fails closed.
+- One `dcli`-owned window for both locked and logged-out keeps the master password and second factor out of PipelinePilot entirely, with the least code.
+- Binding to the configured account stops a same-named item in the wrong vault from being sent to a service.
+- Per-operation fetch is the simplest correct design for infrequent operations; a rotated key takes effect on the next operation, so the next Anthropic key rotation becomes a vault-only change.
+- A fail-closed access log means every key handed out has a record.
+- Backout restores the cutover config instead of relying on legacy fields surviving in place, so no settings-save path can break rollback.
+
+### Rejected Alternatives
+
+- **Environment variables filled by `launch.bat`.** Two launch paths would each need a launcher; values would sit in inherited process environments.
+- **Windows Credential Manager / Python `keyring`.** A second secret store beside the vault; two places to rotate.
+- **Keep the keys in the config file because OneDrive is protected.**  chose one location per secret.
+- **Detect a locked vault by timing out a read.** Slower, and indistinguishable from other hangs.
+- **dcli non-interactive service-device mode** (`dcli devices register` + `DASHLANE_SERVICE_DEVICE_KEYS`, documented, no prompts). Puts a vault-wide secret back into an environment variable or file — the problem this ADR removes — and drops the master-password prompt Jonathan asked for.
+- **Pass the master password to `dcli` programmatically, or collect login steps in a custom PipelinePilot form.** Routes the master password and second factor through PipelinePilot code.
+- **Background credential broker or app-lifetime cache.** More moving parts; a rotated key would not apply until restart.
+- **Per-request "key used" event at each call site** (suggested in review). Retrieval is once per operation, so retrieval time already answers "when were my keys used"; extra events add code in two modules for little gain. Rejected by Jonathan, 2026-10-12.
+- **Code-only backout relying on legacy fields surviving every settings save** (v2). Replaced by restoring the cutover config backup.
+
+### Consequences
+
+- **Dependency:** `dcli` installed and logged in to the agent account on any machine that runs OB import or JFA. All other PipelinePilot functions work without it.
+- **To verify in Phase 1:** that the MCP server, started by Claude Desktop, can open the unlock window (Windows `CREATE_NEW_CONSOLE`). If it cannot, MCP returns the error with instructions to unlock from the desktop app or run `dcli sync` in a terminal; this is acceptable.
+- **Backup and restore tooling (already built, tool v1.2):** `PipelinePilotBackupFile.bat`, `PipelinePilotRestoreFile.bat`, `tools/pp_backup_restore.py`. Backup: SQLite backup API, `integrity_check`, row counts, `foreign_key_check`, `user_version` and schema hash compared source-to-copy; SHA-256 per file; `VALID FOR CUTOVER` flag; process re-check at end. Restore: re-verifies the backup; refuses while PipelinePilot, the MCP server or Claude Desktop runs, or when the process check fails; stages and verifies a temp copy before touching production; moves live `-wal`/`-shm` aside only at the replace and puts them back if it fails; retries locked replaces; saves replaced files to `pre_restore/`; halts on a database/config failure; `--dry-run`, `--only`, `--path`. Every run, including refused ones, writes `run.log`, `manifest.csv`, `summary.json` and a line in `PipelinePilot_audit.log`. Tested on scratch data (cases listed in OB).
+- **Code:** new `vault.py` and `unlock_window.py`; changes to `config.py`, `models.py`, `pipelinepilot.py` (Settings, OB import, JFA check), `mcp_server/tools.py`, `fit_analysis_engine.py`, `ob_bridge.py`; `.gitignore` covers `logs/`.
+- **Tests (mocked subprocess, synthetic sentinel secret, no real vault):**
+  - State table: each row, including logged out without a `Locked` line, case/whitespace variants, duplicate contradictory fields, unparseable output, status non-zero and timeout.
+  - Account binding: wrong account while unlocked and while locked; `agent_vault_account` empty.
+  - Read failures: non-zero, empty output, timeout (including a read that hangs while the vault is unlocked, e.g. an auto-sync waiting on input), `dcli` missing.
+  - Read by ID: `dl://<item-id>/password` used; Test vault access shows the title only; the two Dashlane environment variables are absent from the dcli child environment; `dcli-version` logged once per process.
+  - Unlock window: launched once per process while running; launch failure reported; Retry reruns status.
+  - Access log: `attempt` before read; `retrieved` before return; unwritable/missing `logs/` → no value returned; fixed caller/event values; desktop and MCP callers write to their own files.
+  - No-leak: sentinel absent from stdout/stderr, exception text and `__cause__`/`__context__`, dialog/MCP error text, access log, other app logs, config, environment, argv, and any file written during the run.
+  - Unlock helper: `dcli sync` exit 0 → helper exits; non-zero → helper waits, Retry reports the window still open; after it is closed, Retry opens a new window. Successful login, later relock → a new window opens.
+  - State-table precedence: logged out with and without `Locked`/`Login`; wrong account while locked → `wrong-account`, no window; `Logged in: Yes` missing `Locked` or `Login` → `status-unrecognized`.
+  - `ob_bridge` non-200 raises; MCP `run_ob_import` uses `get_secret()`; a changed vault value is used on the next operation.
+- **Docs:** README setup, Data Dictionary config keys, CHANGELOG, MCP Server PRD (credential source).
+- **No rotation** is required by this change. The Anthropic key still rotates before its expiry date.
+- **Out of scope:** credentials held by other tools and agents.
+
+### Review
+
+Reviewed under Jonathan's multi-model review gate before acceptance: Claude (author), Gee (ChatGPT) in three rounds, Mini (Gemini) on design and code, and Lexi (Perplexity) as a fact-check of the external dcli, SQLite, Windows and OneDrive assumptions. All three reviewers returned APPROVE_WITH_CHANGES. Every blocking finding was fixed before acceptance, including two defects in the backup/restore tool found by the fact-check (a failed replace could strand the live WAL file; a failed process check let a restore proceed). Two suggestions were declined for simplicity: reading the Claude Desktop config to identify the MCP server (restore refuses whenever Claude Desktop runs), and having the unlock window report its own visibility (verified in Phase 1, with a fallback).
+
+---
+
 *ADRs 001–007 produced from a structured requirements interview and cross-platform AI design session (Claude + ChatGPT) conducted March 7, 2026.*
 *ADR-008 added March 12, 2026, following several days of production use.*
 *ADRs 009–011 added August 7, 2026, driven by follow-up maintenance skill design work and data analysis of all 197 pipeline records.*
 *ADR-012 added October 6, 2026, after tracing why job URLs captured at quick-fit never reached promoted opportunities.*
+*ADR-013 added October 12, 2026, after a security review found live API keys in plain text in the config file; reviewed by Claude, ChatGPT, Gemini and Perplexity before acceptance.*
