@@ -7,7 +7,7 @@ Design decisions:
   - Uses raw requests (not supabase-py) to keep dependencies lean.
   - Dedup via ob_thought_id column — each OB thought imported at most once.
   - Parses both [quick-fit-log] and [opportunity-artifact] blocks.
-  - Falls back gracefully if OB is unreachable or creds are missing.
+  - Network failures fall back gracefully; HTTP failures remain visible.
 """
 
 import re
@@ -20,6 +20,10 @@ from typing import Optional
 import requests
 
 logger = logging.getLogger("ob_bridge")
+
+
+class OpenBrainFetchError(RuntimeError):
+    """A visible OpenBrain fetch failure with no response body or credential data."""
 
 # Reason the most recent parse_qfl_block() call rejected its input.
 # run_import() reads this to attach the reason to each parse failure.
@@ -296,10 +300,10 @@ def fetch_qfl_thoughts(
             resp = requests.get(rest_url, headers=headers, params=params, timeout=15)
             # Handle both 200 and 206 (partial content when count headers present)
             if resp.status_code not in (200, 206):
-                logger.error(
-                    f"Supabase API error: {resp.status_code} — {resp.text[:200]}"
+                logger.error("Supabase API error: HTTP %s", resp.status_code)
+                raise OpenBrainFetchError(
+                    f"OpenBrain request failed (HTTP {resp.status_code})."
                 )
-                return []
 
             batch = resp.json()
             all_thoughts.extend(batch)
@@ -323,17 +327,19 @@ def fetch_qfl_thoughts(
         )
         return qfl_thoughts
 
+    except OpenBrainFetchError:
+        raise
     except requests.exceptions.ConnectionError:
         logger.error("Cannot reach Supabase — check internet connection")
         return []
     except requests.exceptions.HTTPError as e:
-        logger.error(
-            f"Supabase API error: {e.response.status_code} — "
-            f"{e.response.text[:200]}"
-        )
-        return []
+        status_code = getattr(e.response, "status_code", "unknown")
+        logger.error("Supabase API error: HTTP %s", status_code)
+        raise OpenBrainFetchError(
+            f"OpenBrain request failed (HTTP {status_code})."
+        ) from None
     except Exception as e:
-        logger.error(f"Unexpected error fetching from OB: {e}")
+        logger.error("Unexpected error fetching from OB: %s", type(e).__name__)
         return []
 
 

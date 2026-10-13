@@ -1323,7 +1323,13 @@ class PipelinePilotApp(ctk.CTk):
         self.update()
 
         # Run import
-        result = ob_bridge.run_import(self.db_path, ob_url, ob_key)
+        try:
+            result = ob_bridge.run_import(self.db_path, ob_url, ob_key)
+        except ob_bridge.OpenBrainFetchError as error:
+            status_label.destroy()
+            messagebox.showerror("OB Import Failed", str(error))
+            self._show_dashboard()
+            return
 
         # Clear progress and show results
         status_label.destroy()
