@@ -585,6 +585,7 @@ This change touches no database schema and no opportunity folders, but backup an
   - `ob_bridge` non-200 raises; MCP `run_ob_import` uses `get_secret()`; a changed vault value is used on the next operation.
 - **Docs:** README setup, Data Dictionary config keys, CHANGELOG, MCP Server PRD (credential source).
 - **No rotation** is required by this change. The Anthropic key still rotates before its expiry date.
+- `migrations/backfill_job_url_from_ob.py` retired — one-time ADR-012 backfill already applied; recover from git history if ever needed.
 - **Out of scope:** credentials held by other tools and agents.
 
 ### Review
