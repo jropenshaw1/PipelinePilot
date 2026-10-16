@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     if return_code == 0:
         return 0
     print(
-        "Login did not complete — press Enter to close this window, then click Retry in PipelinePilot",
+        "Login did not complete. Close this window, then try the operation again.",
         flush=True,
     )
     input()

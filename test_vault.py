@@ -139,6 +139,25 @@ def test_empty_account_is_not_configured_without_subprocess(isolated_vault, monk
     assert caught.value.reason == "not-configured"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "not-configured",
+        "dcli-missing",
+        "status-unrecognized",
+        "not-logged-in",
+        "locked",
+        "wrong-account",
+        "item-failed",
+    ],
+)
+def test_recovery_messages_are_neutral(reason):
+    message = vault._message_for(reason)
+    assert "try the operation again" in message
+    assert "Retry" not in message
+    assert "press Enter" not in message
+
+
 def test_legacy_keys_are_not_defaulted_or_modeled():
     assert "ob_supabase_key" not in config.DEFAULTS
     assert "anthropic_api_key" not in config.DEFAULTS
@@ -255,8 +274,14 @@ def test_locked_window_not_duplicated_and_later_relock_opens_new_one(isolated_va
     monkeypatch.setattr(vault.subprocess, "Popen", popen)
     with pytest.raises(vault.VaultError, match="Complete the steps"):
         vault.get_secret(vault.OB_KEY_ITEM, "desktop-ob-import")
-    with pytest.raises(vault.VaultError, match="still open"):
+    with pytest.raises(vault.VaultError, match="still open") as caught:
         vault.get_secret(vault.OB_KEY_ITEM, "desktop-ob-import")
+    assert str(caught.value) == (
+        "The Unlock agent vault window is still open. Finish in the open window, "
+        "or close it with Ctrl+C, then try the operation again."
+    )
+    assert "Retry" not in str(caught.value)
+    assert "press Enter" not in str(caught.value)
     assert len(processes) == 1
     processes[0].returncode = 0
     with pytest.raises(vault.VaultError, match="Complete the steps"):
@@ -272,8 +297,11 @@ def test_window_launch_failure_reports_terminal_fallback(isolated_vault, monkeyp
 
     monkeypatch.setattr(vault.subprocess, "run", run)
     monkeypatch.setattr(vault.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError()))
-    with pytest.raises(vault.VaultError, match="dcli sync"):
+    with pytest.raises(vault.VaultError, match="dcli sync") as caught:
         vault.get_secret(vault.OB_KEY_ITEM, "desktop-ob-import")
+    assert "try the operation again" in str(caught.value)
+    assert "Retry" not in str(caught.value)
+    assert "press Enter" not in str(caught.value)
 
 
 @pytest.mark.parametrize(("mode", "reason", "event"), [
@@ -392,7 +420,7 @@ def test_unlock_helper_success_exits_without_wait(monkeypatch):
     ]) == 0
 
 
-def test_unlock_helper_failure_waits_and_scrubs_environment(monkeypatch):
+def test_unlock_helper_failure_waits_and_scrubs_environment(monkeypatch, capsys):
     waited = []
 
     def run(command, **kwargs):
@@ -408,3 +436,7 @@ def test_unlock_helper_failure_waits_and_scrubs_environment(monkeypatch):
         "--account", ACCOUNT, "--state", "not-logged-in", "--dcli-path", "dcli-test"
     ]) == 3
     assert waited == [True]
+    output = capsys.readouterr().out
+    assert "Login did not complete. Close this window, then try the operation again." in output
+    assert "Retry" not in output
+    assert "press Enter" not in output

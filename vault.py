@@ -75,16 +75,30 @@ class VaultError(RuntimeError):
 
 def _message_for(reason: str) -> str:
     messages = {
-        "not-configured": "Agent vault settings are incomplete. Update Settings, then Retry.",
-        "dcli-missing": "Dashlane CLI was not found. Install dcli, then Retry.",
-        "status-unrecognized": "Dashlane CLI status was not recognized. Run dcli status in a terminal, then Retry.",
-        "not-logged-in": "Complete the steps in the Unlock agent vault window, then click Retry.",
-        "locked": "Complete the steps in the Unlock agent vault window, then click Retry.",
+        "not-configured": (
+            "Agent vault settings are incomplete. Update Settings, then try the operation again."
+        ),
+        "dcli-missing": (
+            "Dashlane CLI was not found. Install dcli, then try the operation again."
+        ),
+        "status-unrecognized": (
+            "Dashlane CLI status was not recognized. Run dcli status in a terminal, "
+            "then try the operation again."
+        ),
+        "not-logged-in": (
+            "Complete the steps in the Unlock agent vault window, then try the operation again."
+        ),
+        "locked": (
+            "Complete the steps in the Unlock agent vault window, then try the operation again."
+        ),
         "wrong-account": (
             "dcli is logged in to a different Dashlane account. Run `dcli logout`, "
-            "then Retry to log in to the agent vault."
+            "then try the operation again to log in to the agent vault."
         ),
-        "item-failed": "The requested vault item could not be read. Check the item ID, then Retry.",
+        "item-failed": (
+            "The requested vault item could not be read. Check the item ID, "
+            "then try the operation again."
+        ),
         "log-unwritable": "The vault access log is unavailable, so no credential was returned.",
     }
     return messages.get(reason, "Vault access failed.")
@@ -218,8 +232,8 @@ def _launch_unlock_window(item: str, caller: str, reason: str,
     if _unlock_process is not None and _unlock_process.poll() is None:
         raise VaultError(
             reason,
-            "The Unlock agent vault window is still open. Finish there, or press Enter "
-            "to close it, then Retry.",
+            "The Unlock agent vault window is still open. Finish in the open window, "
+            "or close it with Ctrl+C, then try the operation again.",
         ) from None
     _unlock_process = None
     helper = Path(__file__).resolve().parent / "unlock_window.py"
@@ -244,7 +258,7 @@ def _launch_unlock_window(item: str, caller: str, reason: str,
         raise VaultError(
             reason,
             "The Unlock agent vault window could not be opened. Run `dcli sync` in a "
-            "terminal, then Retry.",
+            "terminal, then try the operation again.",
         ) from None
     _append_event(item, caller, "unlock-window-opened")
 
