@@ -529,7 +529,7 @@ This change touches no database schema and no opportunity folders, but backup an
 2. Fresh cutover backup: run `PipelinePilotBackupFile.bat`. It copies the database through SQLite's backup API (WAL contents included), the config, and the job search root; records size, modified time and SHA-256 for every file in `manifest.csv`; runs `PRAGMA integrity_check` and per-table row counts; and writes `BACKUP_COMPLETE` only if every item verified. Cutover continues only on `RESULT: PASS` **and** `VALID FOR CUTOVER: YES` (the tool marks a backup not valid for cutover if PipelinePilot, its MCP server or Claude Desktop was running, or if its process check could not run).
 3. Merge `adr-013-vault` to `main`; pull in the working folder.
 4. Start **PipelinePilot only** (Claude Desktop stays closed, so the MCP server cannot run with incomplete settings). Set and save `agent_vault_account` and the two item IDs in Settings. Run Test vault access, one OB import, one JFA run.
-5. Start Claude Desktop. Run one MCP OB import. Check the access log for all four operations.
+5. Start Claude Desktop. MCP OB import: N/A until the MCP server is ported to the current mcp version. Check the access log for the three desktop operations (settings-test, desktop-ob-import, desktop-jfa).
 
 **Stop / backout triggers (Phases 2–3).** Any of: `integrity_check` not `ok`; opportunity row count drops unexpectedly; OB import or JFA fails for a reason other than vault state that Jonathan can clear by unlocking; any key value appears in a log, dialog, error or file; Jonathan's call.
 
