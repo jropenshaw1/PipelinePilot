@@ -18,6 +18,7 @@ from typing import Any, Callable, TypeVar
 
 import database
 import ob_bridge
+import vault
 from config import CONFIG_PATH
 from models import (
     LAST_COMM_TYPES,
@@ -325,9 +326,9 @@ class PipelinePilotTools:
     def run_ob_import(self) -> Any:
         def operation() -> Any:
             url = self.config.get("ob_supabase_url", "")
-            key = self.config.get("ob_supabase_key", "")
-            if not url or not key:
+            if not url:
                 raise ValueError("OpenBrain import is not configured")
+            key = vault.get_secret(vault.OB_KEY_ITEM, "mcp-ob-import")
             # ob_bridge creates raw sqlite3 connections rather than using
             # database._connect. Temporarily trace those connections too so
             # this tool does not create an unlogged SQL path.

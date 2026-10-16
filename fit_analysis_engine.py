@@ -24,6 +24,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import database
+import vault
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -66,25 +67,6 @@ ANALYSIS_STAGES = [
     ("resume",          "Tailored Resume",  "ATS-ready copy"),
     ("interview_guide", "Interview Guide",  "Prep questions + strategies"),
 ]
-
-# Default API key location — same as Streamlit version
-_API_KEY_FILENAME = "ClaudeAPIkey.txt"
-
-
-def _get_api_key(job_search_root: str, override_key: str = "") -> str:
-    """Return API key from override, key file, or raise."""
-    if override_key and override_key.strip():
-        return override_key.strip()
-    key_file = Path(job_search_root) / _API_KEY_FILENAME
-    if key_file.exists():
-        return key_file.read_text(encoding="utf-8").strip()
-    raise RuntimeError(
-        f"Claude API key not found.\n\n"
-        f"Expected at: {key_file}\n\n"
-        "Either add ClaudeAPIkey.txt to your job search root folder, "
-        "or set the key in Settings → Anthropic API Key."
-    )
-
 
 # ─────────────────────────────────────────────
 # Personal context skill loader
@@ -683,7 +665,6 @@ def run_fit_analysis(
     job_search_root: str,
     folder_name: str,
     resume_path: str,
-    api_key: str,           # empty string = fall back to ClaudeAPIkey.txt
     fit_threshold: float,
     on_success,             # callback(result: dict, output_files: list[Path])
     on_error,               # callback(message: str)
@@ -703,7 +684,7 @@ def run_fit_analysis(
             return
 
         try:
-            resolved_key = _get_api_key(job_search_root, api_key)
+            resolved_key = vault.get_secret(vault.ANTHROPIC_KEY_ITEM, "desktop-jfa")
             client = anthropic.Anthropic(api_key=resolved_key)
 
             folder_path = Path(job_search_root) / folder_name
@@ -790,10 +771,13 @@ def run_fit_analysis(
             on_success(result, output_files)
 
         except Exception as e:
+            if isinstance(e, vault.VaultError):
+                on_error(str(e))
+                return
             try:
                 import anthropic
                 if isinstance(e, anthropic.AuthenticationError):
-                    on_error("Invalid API key.\n\nCheck ClaudeAPIkey.txt or Settings → Anthropic API Key.")
+                    on_error("Anthropic rejected the credential retrieved from the agent vault.")
                     return
                 if isinstance(e, anthropic.RateLimitError):
                     on_error("Rate limit reached. Wait a moment and try again.")

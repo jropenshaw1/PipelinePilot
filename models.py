@@ -78,6 +78,9 @@ APP_VERSION = "0.4.0"
 CONFIG_FILENAME = "pipelinepilot.config"
 DB_FILENAME = "pipelinepilot.db"
 
-# OpenBrain (Supabase) config keys
+# OpenBrain and agent-vault config keys
 OB_SUPABASE_URL_KEY = "ob_supabase_url"
-OB_SUPABASE_KEY_KEY = "ob_supabase_key"
+AGENT_VAULT_ACCOUNT_KEY = "agent_vault_account"
+OB_KEY_VAULT_ID_KEY = "ob_key_vault_id"
+ANTHROPIC_KEY_VAULT_ID_KEY = "anthropic_key_vault_id"
+DCLI_PATH_KEY = "dcli_path"

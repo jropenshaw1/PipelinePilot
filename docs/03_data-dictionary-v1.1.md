@@ -183,7 +183,28 @@ New → Capturing → Analyzing → Pursuing → Applied → In Review → Inter
 
 ---
 
-## 7. Field Validation Rules
+## 7. Configuration Keys
+
+`pipelinepilot.config` stores settings and vault references, never credential values.
+
+| Key | Required | Default | Description |
+|---|---|---|---|
+| `job_search_root` | Yes | — | Cloud-synced root containing the job-search database and opportunity folders. |
+| `fit_threshold` | No | `0.65` | Minimum Job Fit Analyst score used for recommendation logic. |
+| `follow_up_offset_days` | No | `14` | Days added to the application date before snapping to the next Monday. |
+| `resume_path` | For Job Fit Analyst | — | Path to the resume supplied to the analysis workflow. |
+| `context_skill_path` | No | — | Optional path to personal context used by the analysis workflow. |
+| `ob_supabase_url` | For OpenBrain | — | OpenBrain Supabase project URL; not a secret. |
+| `agent_vault_account` | For vault-backed features | — | Dashlane agent-vault login account; not a secret. |
+| `ob_key_vault_id` | For OpenBrain | — | Dashlane item ID for the OpenBrain credential; not the credential value. |
+| `anthropic_key_vault_id` | For Job Fit Analyst | — | Dashlane item ID for the Anthropic credential; not the credential value. |
+| `dcli_path` | No | `dcli` from `PATH` | Optional full path to the Dashlane CLI executable. |
+
+The retired plaintext keys `ob_supabase_key` and `anthropic_api_key` are not read. Runtime credentials are retrieved per operation and are not persisted by PipelinePilot.
+
+---
+
+## 8. Field Validation Rules
 
 | Field | Rule |
 |---|---|
@@ -202,4 +223,4 @@ New → Capturing → Analyzing → Pursuing → Applied → In Review → Inter
 
 ---
 
-*Data Dictionary v1.1 produced August 7, 2026. Changes driven by ADR-009, ADR-010, and ADR-011. Incorporates field additions from migration 006 (pursuit tracker columns) that were previously undocumented.*
+*Data Dictionary v1.1 produced August 7, 2026. Updated for ADR-013 on October 12, 2026. Changes driven by ADR-009, ADR-010, ADR-011, and ADR-013. Incorporates field additions from migration 006 (pursuit tracker columns) that were previously undocumented.*

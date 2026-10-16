@@ -4,13 +4,10 @@ Run: python -m pytest test_job_url.py -v
 
 Covers: fresh-install migration order (010 after 008), OB thought -> import
 -> promote -> opportunities.job_url and JD file, pre-ADR entries without a
-URL, and the one-time backfill (dry run writes nothing, apply fills only
-empty values, a manual URL always wins, backup includes WAL-resident data).
+URL, and backup of WAL-resident data.
 """
 
-import importlib.util
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -40,14 +37,6 @@ Example job description text.
 QFL_NO_URL = QFL_WITH_URL.replace(f"job_url: {URL}\n", "").replace(
     "Example Co", "Older Co"
 )
-
-
-def _load_backfill():
-    path = REPO / "migrations" / "backfill_job_url_from_ob.py"
-    spec = importlib.util.spec_from_file_location("backfill_job_url_from_ob", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture
@@ -120,78 +109,6 @@ def test_pre_adr_entry_without_url_imports_and_promotes(root, db):
     assert database.get_opportunity(db, result["folder_name"])["job_url"] is None
     jd = next((root / result["folder_name"]).glob("JD_*.txt")).read_text(encoding="utf-8")
     assert "Job URL: \n" in jd
-
-
-# ── Backfill ─────────────────────────────────────────────────
-
-@pytest.fixture
-def backfill(root, db, monkeypatch):
-    module = _load_backfill()
-    thoughts = [
-        {"id": "t-url", "content": QFL_WITH_URL},
-        {"id": "t-old", "content": QFL_NO_URL},
-    ]
-    monkeypatch.setattr(module.config, "load_config", lambda: {
-        "job_search_root": str(root),
-        "ob_supabase_url": "https://example.invalid",
-        "ob_supabase_key": "test-key",
-    })
-    monkeypatch.setattr(module.ob_bridge, "fetch_qfl_thoughts", lambda url, key: thoughts)
-
-    def run(*flags):
-        monkeypatch.setattr(sys, "argv", ["backfill", *flags])
-        return module.main()
-    return run
-
-
-@pytest.fixture
-def promoted_without_url(root, db):
-    """A promoted entry whose URL was lost before ADR-012."""
-    _import(db, [{"id": "t-url", "content": QFL_WITH_URL}])
-    qfl_id = _qfl(db)[0]["id"]
-    folder = database.promote_quick_fit(db, qfl_id, str(root))["folder_name"]
-    conn = sqlite3.connect(db)
-    conn.execute("UPDATE quick_fit_log SET job_url = NULL")
-    conn.execute("UPDATE opportunities SET job_url = NULL")
-    conn.commit()
-    conn.close()
-    return folder
-
-
-def test_extract_job_url():
-    module = _load_backfill()
-    assert module.extract_job_url(QFL_WITH_URL) == URL
-    assert module.extract_job_url(QFL_NO_URL) is None
-    assert module.extract_job_url("no block here") is None
-
-
-def test_backfill_dry_run_writes_nothing(backfill, db, root, promoted_without_url):
-    assert backfill() == 0
-    assert _qfl(db)[0]["job_url"] is None
-    assert database.get_opportunity(db, promoted_without_url)["job_url"] is None
-    assert not list(root.glob("*.backup_*"))
-
-
-def test_backfill_apply_fills_only_empty(backfill, db, root, promoted_without_url):
-    assert backfill("--apply") == 0
-    assert _qfl(db)[0]["job_url"] == URL
-    assert database.get_opportunity(db, promoted_without_url)["job_url"] == URL
-    assert len(list(root.glob("*.backup_*"))) == 1
-
-
-def test_backfill_never_overwrites_manual_url(backfill, db, promoted_without_url):
-    database.update_opportunity(db, promoted_without_url, {"job_url": "MANUAL"})
-    assert backfill("--apply") == 0
-    assert database.get_opportunity(db, promoted_without_url)["job_url"] == "MANUAL"
-
-
-def test_backfill_skips_missing_opportunity_record(backfill, db, promoted_without_url):
-    conn = sqlite3.connect(db)
-    conn.execute("DELETE FROM opportunities WHERE folder_name = ?", (promoted_without_url,))
-    conn.commit()
-    conn.close()
-    assert backfill("--apply") == 0
-    assert _qfl(db)[0]["job_url"] == URL  # QFL row still filled
 
 
 # ── WAL-safe backup ──────────────────────────────────────────

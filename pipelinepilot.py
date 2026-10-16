@@ -14,6 +14,7 @@ import database
 import filesystem
 import fit_analysis_engine
 import ob_bridge
+import vault
 from models import (
     POST_APPLICATION_STATUSES,
     APP_NAME,
@@ -25,7 +26,10 @@ from models import (
     LAST_COMM_TYPES,
     RESTRICTION_OPTIONS,
     OB_SUPABASE_URL_KEY,
-    OB_SUPABASE_KEY_KEY,
+    AGENT_VAULT_ACCOUNT_KEY,
+    OB_KEY_VAULT_ID_KEY,
+    ANTHROPIC_KEY_VAULT_ID_KEY,
+    DCLI_PATH_KEY,
 )
 
 # Date fields entered by hand in the detail view (YYYY-MM-DD)
@@ -715,27 +719,74 @@ class PipelinePilotApp(ctk.CTk):
             cs_row, text="Browse", command=self._browse_context_skill, width=90, fg_color=C_PANEL,
         ).pack(side="left")
 
-        # ── Anthropic API Key ──
-        self._settings_section(frame, "Anthropic API Key")
+        # ── Agent Vault ──
+        self._settings_section(frame, "Agent Vault Configuration")
 
-        key_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
-        key_frame.pack(fill="x", pady=(0, 20))
-        key_inner = ctk.CTkFrame(key_frame, fg_color="transparent")
-        key_inner.pack(fill="x", padx=16, pady=16)
+        vault_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        vault_frame.pack(fill="x", pady=(0, 20))
+        vault_inner = ctk.CTkFrame(vault_frame, fg_color="transparent")
+        vault_inner.pack(fill="x", padx=16, pady=16)
         ctk.CTkLabel(
-            key_inner,
-            text="Optional — if blank, engine reads ClaudeAPIkey.txt from your job search root folder.",
+            vault_inner,
+            text="PipelinePilot retrieves credentials by Dashlane item ID. Key values are never saved here.",
             text_color=C_MUTED,
             font=ctk.CTkFont(size=11),
             wraplength=560,
+            justify="left",
         ).pack(anchor="w", pady=(0, 8))
-        self._api_key_var = ctk.StringVar(value=self.cfg.get("anthropic_api_key", ""))
+
+        ctk.CTkLabel(
+            vault_inner, text="Agent vault account", text_color=C_TEXT,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._vault_account_var = ctk.StringVar(
+            value=self.cfg.get(AGENT_VAULT_ACCOUNT_KEY, "")
+        )
         ctk.CTkEntry(
-            key_inner,
-            textvariable=self._api_key_var,
-            width=540,
+            vault_inner, textvariable=self._vault_account_var, width=540,
+            font=ctk.CTkFont(size=11),
+        ).pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            vault_inner, text="OpenBrain key vault item ID", text_color=C_TEXT,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._ob_vault_id_var = ctk.StringVar(value=self.cfg.get(OB_KEY_VAULT_ID_KEY, ""))
+        ctk.CTkEntry(
+            vault_inner, textvariable=self._ob_vault_id_var, width=540,
             font=ctk.CTkFont(size=11, family="Courier"),
-            show="•",
+        ).pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            vault_inner, text="Anthropic key vault item ID", text_color=C_TEXT,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._anthropic_vault_id_var = ctk.StringVar(
+            value=self.cfg.get(ANTHROPIC_KEY_VAULT_ID_KEY, "")
+        )
+        ctk.CTkEntry(
+            vault_inner, textvariable=self._anthropic_vault_id_var, width=540,
+            font=ctk.CTkFont(size=11, family="Courier"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            vault_inner, text="dcli path (optional)", text_color=C_TEXT,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", pady=(0, 2))
+        self._dcli_path_var = ctk.StringVar(value=self.cfg.get(DCLI_PATH_KEY, "dcli"))
+        ctk.CTkEntry(
+            vault_inner, textvariable=self._dcli_path_var, width=540,
+            font=ctk.CTkFont(size=11),
+        ).pack(anchor="w", pady=(0, 8))
+
+        self._vault_test_status_var = ctk.StringVar(value="")
+        ctk.CTkLabel(
+            vault_inner, textvariable=self._vault_test_status_var,
+            text_color=C_MUTED, font=ctk.CTkFont(size=11), justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        ctk.CTkButton(
+            vault_inner, text="Test vault access", command=self._test_vault_access,
+            width=160, fg_color=C_PANEL,
         ).pack(anchor="w")
 
         # ── OpenBrain (Supabase) Configuration ──
@@ -748,7 +799,7 @@ class PipelinePilotApp(ctk.CTk):
         ctk.CTkLabel(
             ob_inner,
             text="Connect to OpenBrain (Supabase) for quick-fit log import.\n"
-                 "Use the service_role JWT key (bypasses RLS).",
+                 "The OpenBrain access key is retrieved from the configured agent-vault item.",
             text_color=C_MUTED,
             font=ctk.CTkFont(size=11),
             wraplength=560,
@@ -763,16 +814,6 @@ class PipelinePilotApp(ctk.CTk):
             ob_inner, textvariable=self._ob_url_var, width=540,
             font=ctk.CTkFont(size=11), placeholder_text="https://xxxxx.supabase.co",
         ).pack(anchor="w", pady=(0, 8))
-
-        ctk.CTkLabel(
-            ob_inner, text="Service Role Key", text_color=C_TEXT, font=ctk.CTkFont(size=12),
-        ).pack(anchor="w", pady=(0, 2))
-        self._ob_key_var = ctk.StringVar(value=self.cfg.get(OB_SUPABASE_KEY_KEY, ""))
-        ctk.CTkEntry(
-            ob_inner, textvariable=self._ob_key_var, width=540,
-            font=ctk.CTkFont(size=11, family="Courier"), show="•",
-            placeholder_text="eyJhbGciOiJI...",
-        ).pack(anchor="w")
 
         # ── Rebuild Index ──
         self._settings_section(frame, "Database")
@@ -826,6 +867,23 @@ class PipelinePilotApp(ctk.CTk):
             width=160,
             height=40,
         ).pack(anchor="w", pady=(8, 0))
+
+    def _test_vault_access(self):
+        """Confirm both configured item IDs by title without reading either password."""
+        self._vault_test_status_var.set("Checking vault item titles...")
+        self.update_idletasks()
+        while True:
+            try:
+                ob_title = vault.get_item_title(vault.OB_KEY_ITEM)
+                anthropic_title = vault.get_item_title(vault.ANTHROPIC_KEY_ITEM)
+                self._vault_test_status_var.set(
+                    f"OpenBrain: OK — {ob_title}\nAnthropic: OK — {anthropic_title}"
+                )
+                return
+            except vault.VaultError as error:
+                self._vault_test_status_var.set(f"Vault access: {error.reason}")
+                if not messagebox.askretrycancel("Vault Access", str(error)):
+                    return
 
     def _rebuild_index(self):
         """FR-25 through FR-29: Trigger database rebuild from filesystem."""
@@ -1233,16 +1291,22 @@ class PipelinePilotApp(ctk.CTk):
             return
 
         ob_url = self.cfg.get(OB_SUPABASE_URL_KEY, "").strip()
-        ob_key = self.cfg.get(OB_SUPABASE_KEY_KEY, "").strip()
 
-        if not ob_url or not ob_key:
+        if not ob_url:
             messagebox.showwarning(
                 "OB Not Configured",
-                "Add your OpenBrain Supabase URL and key in Settings.\n\n"
-                "URL: https://<your-project-ref>.supabase.co\n"
-                "Key: your service_role JWT",
+                "Add your OpenBrain Supabase URL in Settings.\n\n"
+                "URL: https://<your-project-ref>.supabase.co",
             )
             return
+
+        while True:
+            try:
+                ob_key = vault.get_secret(vault.OB_KEY_ITEM, "desktop-ob-import")
+                break
+            except vault.VaultError as error:
+                if not messagebox.askretrycancel("Vault Access", str(error)):
+                    return
 
         # Show progress
         self._clear_content()
@@ -1259,7 +1323,13 @@ class PipelinePilotApp(ctk.CTk):
         self.update()
 
         # Run import
-        result = ob_bridge.run_import(self.db_path, ob_url, ob_key)
+        try:
+            result = ob_bridge.run_import(self.db_path, ob_url, ob_key)
+        except ob_bridge.OpenBrainFetchError as error:
+            status_label.destroy()
+            messagebox.showerror("OB Import Failed", str(error))
+            self._show_dashboard()
+            return
 
         # Clear progress and show results
         status_label.destroy()
@@ -1687,9 +1757,11 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["follow_up_offset_days"] = offset
         self.cfg["resume_path"] = self._resume_path_var.get().strip()
         self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
-        self.cfg["anthropic_api_key"] = self._api_key_var.get().strip()
         self.cfg[OB_SUPABASE_URL_KEY] = self._ob_url_var.get().strip()
-        self.cfg[OB_SUPABASE_KEY_KEY] = self._ob_key_var.get().strip()
+        self.cfg[AGENT_VAULT_ACCOUNT_KEY] = self._vault_account_var.get().strip()
+        self.cfg[OB_KEY_VAULT_ID_KEY] = self._ob_vault_id_var.get().strip()
+        self.cfg[ANTHROPIC_KEY_VAULT_ID_KEY] = self._anthropic_vault_id_var.get().strip()
+        self.cfg[DCLI_PATH_KEY] = self._dcli_path_var.get().strip() or "dcli"
         config.save_config(self.cfg)
         messagebox.showinfo("Saved", "Settings saved successfully.")
 
@@ -2271,14 +2343,12 @@ class DetailWindow(ctk.CTkToplevel):
                 "Set your master resume path in Settings → Resume Path."
             )
             return
-        from pathlib import Path as _Path
-        api_key = cfg.get("anthropic_api_key", "").strip()
-        key_file = _Path(cfg["job_search_root"]) / "ClaudeAPIkey.txt"
-        if not api_key and not key_file.exists():
+        if not cfg.get(AGENT_VAULT_ACCOUNT_KEY, "").strip() or not cfg.get(
+            ANTHROPIC_KEY_VAULT_ID_KEY, ""
+        ).strip():
             messagebox.showerror(
-                "API Key Required",
-                f"Add your Anthropic API key to:\n{key_file}\n\n"
-                "Or set it in Settings → Anthropic API Key."
+                "Agent Vault Settings Required",
+                "Set the agent vault account and Anthropic key vault item ID in Settings."
             )
             return
         AnalysisProgressDialog(self, self.opp, self.db_path, self.cfg)
@@ -2422,6 +2492,11 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             fg_color=C_ACCENT, hover_color="#c73652",
             font=ctk.CTkFont(size=13, weight="bold"), width=120, height=36,
         )
+        self._retry_btn = ctk.CTkButton(
+            f, text="Retry", command=self._retry,
+            fg_color=C_PANEL, hover_color=C_BLUE,
+            font=ctk.CTkFont(size=13, weight="bold"), width=120, height=36,
+        )
 
     def _start(self):
         fit_analysis_engine.run_fit_analysis(
@@ -2429,7 +2504,6 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             job_search_root=self.cfg["job_search_root"],
             folder_name=self.opp["folder_name"],
             resume_path=self.cfg.get("resume_path", ""),
-            api_key=self.cfg.get("anthropic_api_key", ""),
             fit_threshold=self.cfg.get("fit_threshold", 0.65),
             on_success=self._handle_success,
             on_error=self._handle_error,
@@ -2501,8 +2575,20 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             self._detail_var.set("")
             self._error_var.set(message)
             self._error_lbl.pack(anchor="w", pady=(14, 8))
+            self._retry_btn.pack(anchor="w", pady=(8, 0))
             self._close_btn.pack(anchor="w", pady=(8, 0))
         self.after(0, _update)
+
+    def _retry(self):
+        self._retry_btn.pack_forget()
+        self._close_btn.pack_forget()
+        self._error_lbl.pack_forget()
+        self._error_var.set("")
+        self._step_var.set("Retrying...")
+        self._done = False
+        for stage_id, _, _ in fit_analysis_engine.ANALYSIS_STAGES:
+            self._set_card_state(stage_id, "pending")
+        self._start()
 
     def _on_close_attempt(self):
         if self._done:

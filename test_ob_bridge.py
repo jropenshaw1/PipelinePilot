@@ -4,7 +4,10 @@ Run: python -m pytest test_ob_bridge.py -v
 """
 
 import pytest
+import ob_bridge
 from ob_bridge import (
+    OpenBrainFetchError,
+    fetch_qfl_thoughts,
     parse_qfl_block,
     parse_opportunity_artifact,
     parse_rationale,
@@ -229,3 +232,42 @@ class TestParseObThought:
         record = parse_ob_thought({"id": "no-url-test", "content": JOBGETHER_CONTENT})
         assert record is not None
         assert "job_url" not in record
+
+
+class TestFetchQflThoughts:
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429, 500])
+    def test_non_success_status_raises_without_response_body(
+        self, monkeypatch, caplog, status_code
+    ):
+        sentinel = "SYNTHETIC_RESPONSE_BODY_DO_NOT_LOG"
+
+        class Response:
+            text = sentinel
+
+            def __init__(self):
+                self.status_code = status_code
+
+            def json(self):
+                pytest.fail("error response was parsed")
+
+        monkeypatch.setattr(ob_bridge.requests, "get", lambda *a, **k: Response())
+        with pytest.raises(OpenBrainFetchError, match=f"HTTP {status_code}") as caught:
+            fetch_qfl_thoughts("https://example.invalid", "synthetic-key")
+
+        assert sentinel not in str(caught.value)
+        assert sentinel not in caplog.text
+
+    @pytest.mark.parametrize("status_code", [200, 206])
+    def test_success_statuses_return_filtered_thoughts(self, monkeypatch, status_code):
+        class Response:
+            def __init__(self):
+                self.status_code = status_code
+
+            def json(self):
+                return [{"id": "one", "content": "[quick-fit-log]\n[/quick-fit-log]"}]
+
+        monkeypatch.setattr(ob_bridge.requests, "get", lambda *a, **k: Response())
+        result = fetch_qfl_thoughts(
+            "https://example.invalid", "synthetic-key", page_size=10
+        )
+        assert [thought["id"] for thought in result] == ["one"]
