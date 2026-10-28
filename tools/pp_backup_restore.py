@@ -8,6 +8,9 @@ Backup copies, into a new timestamped folder:
              or printed by this script)
   jobsearch/ every other file and folder under job_search_root (opportunity
              folders, JFA outputs, notes), including empty folders
+  archive/   every file and folder under the archive root (ADR-014: archived
+             opportunity folders, 001_ArchiveJobSearch by default), resolved
+             by config.get_archive_root() exactly as the app resolves it
 
 Every file gets size, modified time and SHA-256 of source and copy in
 manifest.csv; summary.json holds totals, git commit, DB integrity and row
@@ -24,7 +27,11 @@ Restore copies a verified backup back to production:
   * skips files already identical, verifies every written file's SHA-256,
     runs integrity_check and row counts on the restored database
   * never deletes production files that are not in the backup; lists them
-  * targeted: --only database|config|jobsearch, --path "<glob under jobsearch>"
+  * puts each folder back where it was at backup time (job search root or
+    archive root) and never deletes; a folder archived since the backup can
+    end up in both roots, which PipelinePilot's startup consistency check lists
+  * targeted: --only database|config|jobsearch|archive,
+    --path "<glob under jobsearch or archive>"
 
 Paths come from pipelinepilot.config; nothing machine-specific is hard-coded.
 Usage: python tools/pp_backup_restore.py backup  [--dest DIR]
@@ -51,15 +58,19 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "1.4"
+VERSION = "1.5"
 REPO_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_DIR))
+import config as pp_config  # noqa: E402  (archive root resolved the same way as the app)
+
 CONFIG_PATH = REPO_DIR / "pipelinepilot.config"
 DB_NAME = "pipelinepilot.db"
 DB_SIDECARS = ("-wal", "-shm", "-journal")
 BACKUP_DIRNAME = "PipelinePilot_Backups"
 AUDIT_LOG = "PipelinePilot_audit.log"
 COMPLETE_MARKER = "BACKUP_COMPLETE"
-CATEGORIES = ("database", "config", "jobsearch")
+CATEGORIES = ("database", "config", "jobsearch", "archive")
+TREE_CATEGORIES = ("jobsearch", "archive")
 MANIFEST_FIELDS = [
     "category", "type", "relative_path", "source_path", "dest_path",
     "size_bytes", "mtime_utc", "sha256_source", "sha256_dest", "action",
@@ -152,6 +163,11 @@ def load_job_search_root() -> Path:
     if not p.is_dir():
         sys.exit(f"job_search_root does not exist: {p}")
     return p
+
+
+def archive_root_for(job_root: Path) -> Path:
+    """ADR-014 archive root: config key archive_root, else 001_ArchiveJobSearch beside job_root."""
+    return pp_config.get_archive_root(job_root, CONFIG_PATH)
 
 
 def default_backup_root(job_root: Path) -> Path:
@@ -295,18 +311,66 @@ def copy_verified(src: Path, dst: Path) -> tuple[str, str, str]:
     return hs, hd, "MISMATCH"
 
 
+def backup_tree(category: str, root: Path, run_dir: Path, backup_root: Path,
+                rows: list, log) -> tuple[int, int, int]:
+    """Copy every file and folder under root into run_dir/<category>, verified by hash.
+    Returns (files, folders, bytes)."""
+    n_files = n_dirs = n_bad = 0
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        d = Path(dirpath)
+        rel_d = d.relative_to(root)
+        if is_inside(d, backup_root):
+            dirnames[:] = []
+            continue
+        dirnames.sort()
+        for dn in dirnames:
+            rel = rel_d / dn
+            L(run_dir / category / rel).mkdir(parents=True, exist_ok=True)
+            rows.append(dict(category=category, type="dir", relative_path=rel.as_posix(),
+                             source_path=str(d / dn), dest_path=str(run_dir / category / rel),
+                             action="mkdir", status="OK", detail=""))
+            n_dirs += 1
+        for fn in sorted(filenames):
+            rel = rel_d / fn
+            if skip_jobsearch(rel, fn):
+                continue
+            src = d / fn
+            dst = run_dir / category / rel
+            try:
+                st = L(src).stat()
+                hs, hd, status = copy_verified(src, dst)
+                detail = ""
+            except Exception as e:  # noqa: BLE001
+                st, hs, hd, status, detail = None, "", "", "ERROR", f"{e.__class__.__name__}: {e}"
+            if status != "OK":
+                n_bad += 1
+                log(f"  {status}: {category}/{rel.as_posix()} {detail}")
+            n_files += 1
+            total += st.st_size if st else 0
+            rows.append(dict(category=category, type="file", relative_path=rel.as_posix(), source_path=str(src),
+                             dest_path=str(dst), size_bytes=st.st_size if st else "",
+                             mtime_utc=iso_utc(st.st_mtime) if st else "", sha256_source=hs, sha256_dest=hd,
+                             action="copy", status=status, detail=detail))
+    log(f"  files={n_files} folders={n_dirs} bytes={total} problems={n_bad}")
+    return n_files, n_dirs, total
+
+
 def do_backup(args) -> int:
     job_root = load_job_search_root()
+    archive_root = archive_root_for(job_root)
     backup_root = Path(args.dest) if args.dest else default_backup_root(job_root)
-    if is_inside(backup_root, job_root) or is_inside(backup_root, REPO_DIR):
-        sys.exit(f"Backup folder must be outside the job search root and the repo: {backup_root}")
+    if (is_inside(backup_root, job_root) or is_inside(backup_root, archive_root)
+            or is_inside(backup_root, REPO_DIR)):
+        sys.exit(f"Backup folder must be outside the job search root, the archive root and the repo: {backup_root}")
     run_dir = unique_dir(backup_root, f"PP_{now_stamp()}")
     log = RunLog(run_dir / "run.log")
     rows: list[dict] = []
     summary: dict = {
         "action": "backup", "script_version": VERSION, "started": dt.datetime.now().isoformat(timespec="seconds"),
         "host": platform.node(), "user": getpass.getuser(), "repo_dir": str(REPO_DIR),
-        "config_path": str(CONFIG_PATH), "job_search_root": str(job_root), "backup_dir": str(run_dir),
+        "config_path": str(CONFIG_PATH), "job_search_root": str(job_root),
+        "archive_root": str(archive_root), "backup_dir": str(run_dir),
     }
     log(f"PipelinePilot BACKUP v{VERSION} -> {run_dir}")
 
@@ -385,46 +449,15 @@ def do_backup(args) -> int:
                      sha256_source=hs, sha256_dest=hd, action="copy", status=status, detail=""))
     log(f"Config: {status} ({st.st_size} bytes; contents not displayed — contains credentials)")
 
-    # job search tree
+    # job search tree, then archive tree (ADR-014)
     log(f"Job search root: {job_root}")
-    n_files = n_dirs = n_bad = 0
-    total = 0
-    for dirpath, dirnames, filenames in os.walk(job_root):
-        d = Path(dirpath)
-        rel_d = d.relative_to(job_root)
-        if is_inside(d, backup_root):
-            dirnames[:] = []
-            continue
-        dirnames.sort()
-        for dn in dirnames:
-            rel = rel_d / dn
-            L(run_dir / "jobsearch" / rel).mkdir(parents=True, exist_ok=True)
-            rows.append(dict(category="jobsearch", type="dir", relative_path=rel.as_posix(),
-                             source_path=str(d / dn), dest_path=str(run_dir / "jobsearch" / rel),
-                             action="mkdir", status="OK", detail=""))
-            n_dirs += 1
-        for fn in sorted(filenames):
-            rel = rel_d / fn
-            if skip_jobsearch(rel, fn):
-                continue
-            src = d / fn
-            dst = run_dir / "jobsearch" / rel
-            try:
-                st = L(src).stat()
-                hs, hd, status = copy_verified(src, dst)
-                detail = ""
-            except Exception as e:  # noqa: BLE001
-                st, hs, hd, status, detail = None, "", "", "ERROR", f"{e.__class__.__name__}: {e}"
-            if status != "OK":
-                n_bad += 1
-                log(f"  {status}: {rel.as_posix()} {detail}")
-            n_files += 1
-            total += st.st_size if st else 0
-            rows.append(dict(category="jobsearch", type="file", relative_path=rel.as_posix(), source_path=str(src),
-                             dest_path=str(dst), size_bytes=st.st_size if st else "",
-                             mtime_utc=iso_utc(st.st_mtime) if st else "", sha256_source=hs, sha256_dest=hd,
-                             action="copy", status=status, detail=detail))
-    log(f"  files={n_files} folders={n_dirs} bytes={total} problems={n_bad}")
+    n_files, n_dirs, total = backup_tree("jobsearch", job_root, run_dir, backup_root, rows, log)
+    log(f"Archive root: {archive_root}")
+    if archive_root.is_dir():
+        a_files, a_dirs, a_total = backup_tree("archive", archive_root, run_dir, backup_root, rows, log)
+    else:
+        a_files = a_dirs = a_total = 0
+        log("  archive root does not exist yet; nothing to back up")
 
     procs_end, _, _, _ = running_pipelinepilot()
     started_during = [p for p in procs_end if p not in procs]
@@ -446,6 +479,7 @@ def do_backup(args) -> int:
     overall = "PASS" if not failures else "FAIL"
     summary.update(finished=dt.datetime.now().isoformat(timespec="seconds"), overall=overall,
                    counts={"jobsearch_files": n_files, "jobsearch_dirs": n_dirs, "jobsearch_bytes": total,
+                           "archive_files": a_files, "archive_dirs": a_dirs, "archive_bytes": a_total,
                            "failures": len(failures)})
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     if overall == "PASS":
@@ -454,6 +488,7 @@ def do_backup(args) -> int:
     log(f"VALID FOR CUTOVER: {'YES' if overall == 'PASS' and clean else 'NO'}"
         + ("" if clean else " (PipelinePilot/MCP/Claude Desktop running, or process check failed)"))
     append_audit(backup_root, f"BACKUP {overall} cutover={'yes' if overall == 'PASS' and clean else 'no'} {run_dir.name} files={n_files} dirs={n_dirs} "
+                              f"archive_files={a_files} archive_dirs={a_dirs} "
                               f"failures={len(failures)} git={summary['git']['head'][:12]}")
     log.close()
     return 0 if overall == "PASS" else 1
@@ -484,6 +519,7 @@ def pick_backup(backup_root: Path, given: str | None, assume_yes: bool) -> Path:
 
 def do_restore(args) -> int:
     job_root = load_job_search_root()
+    archive_root = archive_root_for(job_root)
     backup_root = default_backup_root(job_root) if not args.backup else Path(args.backup).parent
     src_dir = pick_backup(backup_root, args.backup, args.yes)
     if not (src_dir / COMPLETE_MARKER).exists() and not args.force:
@@ -494,7 +530,7 @@ def do_restore(args) -> int:
 
     only = set(args.only or CATEGORIES)
     if args.path:
-        only = {"jobsearch"}
+        only = (only & set(TREE_CATEGORIES)) or set(TREE_CATEGORIES)
     selected = [r for r in manifest if r["category"] in only and r["status"] == "OK"
                 and (not args.path or fnmatch.fnmatch(r["relative_path"], args.path)
                      or r["relative_path"].startswith(args.path.rstrip("/*") + "/"))]
@@ -555,6 +591,7 @@ def do_restore(args) -> int:
         "database": lambda rel: job_root / rel,
         "config": lambda rel: CONFIG_PATH,
         "jobsearch": lambda rel: job_root / rel,
+        "archive": lambda rel: archive_root / rel,
     }
     out: list[dict] = []
     halted: list[str] = []
@@ -662,22 +699,24 @@ def do_restore(args) -> int:
 
     # production files not in the backup are left alone, but listed
     extras = []
-    if "jobsearch" in only and not args.path:
-        known = {r["relative_path"] for r in manifest if r["category"] == "jobsearch"}
-        for dirpath, dirnames, filenames in os.walk(job_root):
+    for category, root in (("jobsearch", job_root), ("archive", archive_root)):
+        if category not in only or args.path or not root.is_dir():
+            continue
+        known = {r["relative_path"] for r in manifest if r["category"] == category}
+        for dirpath, dirnames, filenames in os.walk(root):
             d = Path(dirpath)
             if is_inside(d, backup_root):
                 dirnames[:] = []
                 continue
             for fn in filenames:
-                rel = (d / fn).relative_to(job_root)
+                rel = (d / fn).relative_to(root)
                 if not skip_jobsearch(rel, fn) and rel.as_posix() not in known:
                     extras.append(rel.as_posix())
-        for e in extras:
-            out.append(dict(category="jobsearch", type="file", relative_path=e, dest_path=str(job_root / e),
-                            action="left-in-place (not in backup)", status="OK", detail=""))
-        if extras:
-            log(f"  {len(extras)} production file(s) are newer than the backup and were left in place (see manifest)")
+                    out.append(dict(category=category, type="file", relative_path=rel.as_posix(),
+                                    dest_path=str(root / rel), action="left-in-place (not in backup)",
+                                    status="OK", detail=""))
+    if extras:
+        log(f"  {len(extras)} production file(s) are newer than the backup and were left in place (see manifest)")
 
     with open(run_dir / "manifest.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=MANIFEST_FIELDS)
@@ -705,6 +744,9 @@ def do_restore(args) -> int:
     log(f"Actions: {tally}")
     log(f"RESULT: {overall}{' (DRY RUN — nothing changed)' if args.dry_run else ''}  "
         f"({len(failures)} failures; details in {run_dir})")
+    if not args.dry_run and only & set(TREE_CATEGORIES):
+        log("Launch PipelinePilot: its startup consistency check lists any folder that is now in both "
+            "the job search root and the archive root (archived after this backup was taken).")
     if not args.dry_run:
         log(f"Code is not restored by this script. Backup was taken at git {summary['backup_git_head'][:12]};"
             " use git checkout if the code must match.")
@@ -724,7 +766,7 @@ def main() -> int:
     r = sub.add_parser("restore")
     r.add_argument("--backup", help="a specific PP_<time> backup folder (default: choose from list)")
     r.add_argument("--only", action="append", choices=CATEGORIES, help="restore only this category (repeatable)")
-    r.add_argument("--path", help="restore only jobsearch items matching this relative path or glob")
+    r.add_argument("--path", help="restore only jobsearch/archive items matching this relative path or glob")
     r.add_argument("--dry-run", action="store_true", help="show what would change; change nothing")
     r.add_argument("--force", action="store_true", help="allow a backup without the BACKUP_COMPLETE marker")
     r.add_argument("--yes", action="store_true", help="do not prompt")
