@@ -17,6 +17,10 @@ import ob_bridge
 import vault
 from models import (
     POST_APPLICATION_STATUSES,
+    DEFAULT_STATUS,
+    DEFAULT_STATUS_FILTER,
+    DONE_STATUSES,
+    STATUS_FILTER_OPTIONS,
     APP_NAME,
     APP_VERSION,
     STATUS_VALUES,
@@ -346,7 +350,9 @@ class PipelinePilotApp(ctk.CTk):
             self._show_first_launch()
             return
 
-        opportunities = database.get_all_opportunities(self.db_path)
+        opportunities = database.get_all_opportunities(
+            self.db_path, status_filter=STATUS_FILTER_OPTIONS[DEFAULT_STATUS_FILTER]
+        )
 
         outer = ctk.CTkFrame(self.content, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=24, pady=24)
@@ -381,8 +387,8 @@ class PipelinePilotApp(ctk.CTk):
 
         ctk.CTkLabel(filter_frame, text="Status:", text_color=C_MUTED).pack(side="left", padx=(0, 8))
 
-        self._status_filter_var = ctk.StringVar(value="All")
-        status_options = ["All"] + STATUS_VALUES
+        self._status_filter_var = ctk.StringVar(value=DEFAULT_STATUS_FILTER)
+        status_options = list(STATUS_FILTER_OPTIONS) + STATUS_VALUES
         filter_menu = ctk.CTkOptionMenu(
             filter_frame,
             values=status_options,
@@ -431,12 +437,22 @@ class PipelinePilotApp(ctk.CTk):
 
     def _refresh_list(self, outer_frame=None):
         """Re-render list rows based on status filter, sort order, and search query."""
-        status_filter = self._status_filter_var.get()
-        if status_filter == "All":
-            status_filter = None
+        selected = self._status_filter_var.get()
+        if selected in STATUS_FILTER_OPTIONS:
+            status_filter = STATUS_FILTER_OPTIONS[selected]
+        else:
+            status_filter = [selected]
+        # Done records are archived (ADR-014); include archived rows only when
+        # the selection can contain a Done status.
+        include_archived = status_filter is None or any(
+            s in DONE_STATUSES for s in status_filter
+        )
         sort_by = self._sort_var.get()
         opportunities = database.get_all_opportunities(
-            self.db_path, status_filter=status_filter, sort_by=sort_by
+            self.db_path,
+            include_archived=include_archived,
+            status_filter=status_filter,
+            sort_by=sort_by,
         )
         # Apply search filter client-side
         search = getattr(self, "_search_var", None)
@@ -512,7 +528,7 @@ class PipelinePilotApp(ctk.CTk):
         ).pack(fill="x")
 
         # Status badge
-        status = opp.get("status", "New")
+        status = opp.get("status", DEFAULT_STATUS)
         status_color = C_ACCENT if status in TERMINAL_STATUSES else C_BLUE
         status_lbl = ctk.CTkLabel(
             row,
@@ -1489,7 +1505,7 @@ class PipelinePilotApp(ctk.CTk):
             ctk.CTkLabel(name_frame, text=opp["company_name"], font=ctk.CTkFont(size=13, weight="bold"), text_color=C_TEXT, anchor="w").pack(fill="x")
             ctk.CTkLabel(name_frame, text=opp["role_title"], font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(fill="x")
 
-            status = opp.get("status", "New")
+            status = opp.get("status", DEFAULT_STATUS)
             ctk.CTkLabel(row, text=status, font=ctk.CTkFont(size=11), fg_color=C_BLUE, corner_radius=6, text_color="white", width=120).pack(side="left", padx=4)
 
             fu_date = opp.get("follow_up_date", "—")
@@ -1634,7 +1650,7 @@ class PipelinePilotApp(ctk.CTk):
         ).pack(side="left", padx=4)
 
         # Status badge
-        status = opp.get("status", "New")
+        status = opp.get("status", DEFAULT_STATUS)
         ctk.CTkLabel(
             row, text=status, font=ctk.CTkFont(size=11),
             fg_color=C_BLUE, corner_radius=6, text_color="white", width=80,
@@ -1994,7 +2010,7 @@ class CaptureDialog(ctk.CTkToplevel):
                 "location_type": self._location_var.get(),
                 "job_url": self._url_var.get().strip() or None,
                 "fit_threshold": self.cfg.get("fit_threshold", 0.65),
-                "status": "Capturing",
+                "status": DEFAULT_STATUS,
             }
             database.create_opportunity(self.db_path, record)
 

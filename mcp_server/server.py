@@ -63,7 +63,11 @@ def pipi_search_opportunities(search_term: str) -> object:
 
 @mcp.tool()
 def pipi_update_status(folder_name: str, status: str) -> object:
-    """Update an opportunity lifecycle status."""
+    """Update an opportunity lifecycle status.
+
+    Status is one of: Analyzing, Ready, Applied, Pursuing, Interviewing, Offer,
+    Passed, Rejected, Ghosted, Closed (ADR-014).
+    """
     return tools.update_status(folder_name, status)
 
 
@@ -90,7 +94,10 @@ def pipi_update_contact(folder_name: str, contact_name: str | None = None,
 @mcp.tool()
 def pipi_close_opportunity(folder_name: str, status: str,
                            communication_notes: str | None = None) -> object:
-    """Set a terminal status and optionally record communication notes."""
+    """Set a terminal status and optionally record communication notes.
+
+    Status is one of: Passed, Rejected, Ghosted, Closed (ADR-014).
+    """
     return tools.close_opportunity(folder_name, status, communication_notes)
 
 

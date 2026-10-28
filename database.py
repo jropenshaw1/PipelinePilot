@@ -2,12 +2,15 @@
 # Schema derived from Data Dictionary v1.0 §5
 # NFR-05: Filesystem is truth — SQLite is a derived, rebuildable index
 
+import logging
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
 import config
-from models import DB_FILENAME
+from models import DB_FILENAME, DEFAULT_STATUS, RETIRED_STATUS_MAP
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS opportunities (
@@ -138,7 +141,27 @@ def initialize_database(db_path: Path) -> None:
         migrate_add_interviews_table(conn)
         migrate_add_posting_status_log(conn)
         migrate_add_quick_fit_log(conn)
+        migrate_map_retired_statuses(conn)
         conn.commit()
+
+
+def migrate_map_retired_statuses(conn: sqlite3.Connection) -> None:
+    """ADR-014: map any retired status (New, Capturing, In Review) to its
+    replacement. Idempotent; logs each record changed. Covers a restored older
+    backup or an older writer."""
+    for old, new in RETIRED_STATUS_MAP.items():
+        rows = conn.execute(
+            "SELECT folder_name FROM opportunities WHERE status = ?", (old,)
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE opportunities SET status = ?, date_modified = ? "
+                "WHERE folder_name = ?",
+                (new, date.today().isoformat(), row[0]),
+            )
+            logger.warning(
+                "Retired status mapped (ADR-014): %s: %s -> %s", row[0], old, new
+            )
 
 
 def migrate_add_quick_fit_log(conn: sqlite3.Connection) -> None:
@@ -210,7 +233,7 @@ def create_opportunity(db_path: Path, record: dict) -> None:
     record.setdefault("date_discovered", today)
     record.setdefault("date_created", today)
     record.setdefault("date_modified", today)
-    record.setdefault("status", "Capturing")
+    record.setdefault("status", DEFAULT_STATUS)
     record.setdefault("decision_override", 0)
     record.setdefault("archived", 0)
     record.setdefault("fit_threshold", 0.65)
@@ -451,7 +474,7 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
             "decision_override": 0,
             "top_strengths": str(fit_data.get("top_strengths", [])) if fit_data.get("top_strengths") else None,
             "top_gaps": str(fit_data.get("top_gaps", [])) if fit_data.get("top_gaps") else None,
-            "status": "New",
+            "status": DEFAULT_STATUS,
             "archived": 0,
             "date_created": date.today().isoformat(),
             "date_modified": date.today().isoformat(),
@@ -712,7 +735,7 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
         "location_type": loc_type,
         "location_city": loc_city,
         "decision_notes": entry.get("notes") or "",
-        "status": "Capturing",
+        "status": DEFAULT_STATUS,
     }
     create_opportunity(db_path, record)
 

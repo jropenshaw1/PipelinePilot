@@ -1,29 +1,57 @@
 # models.py — PipelinePilot constants and data structures
 # All values derived from SRS v1.0 and Data Dictionary v1.0
 
-# FR-17: Approved lifecycle status values
+# FR-17: Approved lifecycle status values (ADR-014: status model v2)
 STATUS_VALUES = [
-    "New",
-    "Capturing",
     "Analyzing",
-    "Pursuing",
-    "Passed",
+    "Ready",
     "Applied",
-    "In Review",
+    "Pursuing",
     "Interviewing",
     "Offer",
-    "Closed",
-    "Ghosted",
+    "Passed",
     "Rejected",
+    "Ghosted",
+    "Closed",
 ]
 
-# Terminal statuses — no further progression expected
-TERMINAL_STATUSES = ["Passed", "Offer", "Closed", "Ghosted", "Rejected"]
+# Status for every newly created or indexed opportunity (ADR-014)
+DEFAULT_STATUS = "Analyzing"
+
+# Status groups, by whose move it is (ADR-014)
+STATUS_GROUPS = {
+    "My move": ["Analyzing", "Ready", "Offer"],
+    "Their move": ["Applied", "Pursuing", "Interviewing"],
+    "Done": ["Passed", "Rejected", "Ghosted", "Closed"],
+}
+
+# Terminal statuses — no further progression expected. Offer is not terminal (ADR-014).
+TERMINAL_STATUSES = ["Passed", "Rejected", "Ghosted", "Closed"]
+
+# Done statuses trigger archive on Done (ADR-014); same set as TERMINAL_STATUSES
+DONE_STATUSES = STATUS_GROUPS["Done"]
 
 # Statuses at or past application — "Mark Applied" is hidden for these
 POST_APPLICATION_STATUSES = [
-    "Applied", "In Review", "Interviewing", "Offer", "Closed", "Ghosted", "Rejected",
+    "Applied", "Pursuing", "Interviewing", "Offer", "Closed", "Ghosted", "Rejected",
 ]
+
+# Retired statuses (ADR-014) and the value each is mapped to at startup
+RETIRED_STATUS_MAP = {
+    "New": "Analyzing",
+    "Capturing": "Analyzing",
+    "In Review": "Applied",
+}
+
+# Opportunities-view status filter options (ADR-014). None means no status filter.
+STATUS_FILTER_OPTIONS = {
+    "Active": STATUS_GROUPS["My move"] + STATUS_GROUPS["Their move"],
+    "My move": STATUS_GROUPS["My move"],
+    "Their move": STATUS_GROUPS["Their move"],
+    "Done": STATUS_GROUPS["Done"],
+    "All": None,
+}
+DEFAULT_STATUS_FILTER = "Active"
 
 # Approved source values (data dictionary §5.1)
 SOURCE_VALUES = [
