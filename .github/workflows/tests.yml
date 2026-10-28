@@ -15,4 +15,4 @@ jobs:
       # Only what the test suite imports. The desktop UI (customtkinter),
       # fit analysis (anthropic) and MCP server are not under test here.
       - run: pip install pytest requests PyYAML python-docx
-      - run: python -m pytest -v test_ob_bridge.py test_follow_up.py test_job_url.py test_vault.py test_vault_integration.py
+      - run: python -m pytest -v test_ob_bridge.py test_follow_up.py test_job_url.py test_vault.py test_vault_integration.py test_status_model.py test_archive.py

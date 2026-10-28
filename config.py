@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 from models import (
+    ARCHIVE_ROOT_KEY,
     CONFIG_FILENAME,
+    DEFAULT_ARCHIVE_DIRNAME,
     DEFAULT_FIT_THRESHOLD,
     DEFAULT_FOLLOW_UP_OFFSET_DAYS,
     CLOUD_SYNC_INDICATORS,
@@ -64,6 +66,25 @@ def get_follow_up_offset_days(config_path: Path = None) -> int:
     except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
         pass
     return DEFAULT_FOLLOW_UP_OFFSET_DAYS
+
+
+def get_archive_root(job_search_root, config_path: Path = None) -> Path:
+    """Return the archive root (ADR-014), read fresh from the config file.
+
+    Like the follow-up offset, it is re-read on every call so the desktop app
+    and a running MCP server always agree. Optional key archive_root; the
+    default is 001_ArchiveJobSearch beside the job search root. Validation is
+    filesystem.validate_archive_root().
+    """
+    path = config_path or CONFIG_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            value = (json.load(f).get(ARCHIVE_ROOT_KEY) or "").strip()
+        if value:
+            return Path(value)
+    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    return Path(job_search_root).parent / DEFAULT_ARCHIVE_DIRNAME
 
 
 def is_configured(config: dict) -> bool:

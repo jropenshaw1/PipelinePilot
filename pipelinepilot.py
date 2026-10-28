@@ -15,6 +15,7 @@ import filesystem
 import fit_analysis_engine
 import ob_bridge
 import vault
+from filesystem import ArchiveError
 from models import (
     POST_APPLICATION_STATUSES,
     DEFAULT_STATUS,
@@ -102,6 +103,18 @@ class PipelinePilotApp(ctk.CTk):
             self._show_first_launch()
         else:
             self._show_dashboard()
+            self.after(300, self._run_consistency_check)
+
+    def _run_consistency_check(self):
+        """ADR-014: at startup, list records whose folder location disagrees
+        with archived. Nothing is repaired without the user's choice."""
+        try:
+            issues = database.check_consistency(self.db_path)
+        except ArchiveError as error:
+            messagebox.showerror("Archive Root", str(error))
+            return
+        if any(issues.values()):
+            ConsistencyWindow(self, self.db_path, issues)
 
     # ── Layout ────────────────────────────────
 
@@ -1224,7 +1237,7 @@ class PipelinePilotApp(ctk.CTk):
 
         company = entry.get("company_name", "Unknown")
         role = entry.get("role_title", "?")
-        folder_preview = filesystem.generate_folder_name(company, role)
+        folder_preview = database.preview_folder_name(self.db_path, company, role)
         has_artifact = bool((entry.get("opportunity_artifact") or "").strip())
 
         # Confirmation dialog
@@ -1247,11 +1260,7 @@ class PipelinePilotApp(ctk.CTk):
 
         try:
             print(f"[PROMOTE] Calling database.promote_quick_fit({qfl_id})")
-            result = database.promote_quick_fit(
-                self.db_path,
-                qfl_id,
-                self.cfg["job_search_root"],
-            )
+            result = database.promote_quick_fit(self.db_path, qfl_id)
             print(f"[PROMOTE] Success: {result}")
             messagebox.showinfo(
                 "Promoted",
@@ -1964,13 +1973,19 @@ class CaptureDialog(ctk.CTkToplevel):
         role = self._role_var.get()
 
         if company and role:
-            folder_name = filesystem.generate_folder_name(company, role)
+            base = filesystem.generate_folder_name(company, role)
+            try:
+                folder_name = database.preview_folder_name(self.db_path, company, role)
+            except ArchiveError as error:
+                self._preview_var.set(base)
+                self._duplicate_warn.configure(text=f"⚠  {error}")
+                return
             self._preview_var.set(folder_name)
 
-            # Check for duplicate
-            if filesystem.folder_exists(self.cfg["job_search_root"], folder_name):
+            # ADR-014: a name in use (active or archived) gets a date suffix
+            if folder_name != base:
                 self._duplicate_warn.configure(
-                    text="⚠  A folder with this name already exists."
+                    text=f"⚠  '{base}' is in use (active or archived); a date suffix is added."
                 )
             else:
                 self._duplicate_warn.configure(text="")
@@ -1987,22 +2002,10 @@ class CaptureDialog(ctk.CTkToplevel):
             messagebox.showerror("Required Fields", "Company name and role title are both required.")
             return
 
-        folder_name = filesystem.generate_folder_name(company, role)
-
-        if filesystem.folder_exists(self.cfg["job_search_root"], folder_name):
-            if not messagebox.askyesno(
-                "Duplicate Folder",
-                f"A folder named '{folder_name}' already exists.\n\nCapture anyway?",
-            ):
-                return
-
         try:
-            # FR-05: Create folder and JD document
-            filesystem.create_opportunity_folder(self.cfg["job_search_root"], folder_name)
-
-            # FR-06: Create database record simultaneously
+            # FR-05/FR-06: folder, JD document and record created together;
+            # the name is chosen under the lock (ADR-014)
             record = {
-                "folder_name": folder_name,
                 "company_name": company,
                 "role_title": role,
                 "source": self._source_var.get(),
@@ -2011,7 +2014,10 @@ class CaptureDialog(ctk.CTkToplevel):
                 "fit_threshold": self.cfg.get("fit_threshold", 0.65),
                 "status": DEFAULT_STATUS,
             }
-            database.create_opportunity(self.db_path, record)
+            folder_name = database.create_opportunity_with_folder(
+                self.db_path, record,
+                lambda root, name: filesystem.create_opportunity_folder(str(root), name),
+            )
 
             self.destroy()
             messagebox.showinfo(
@@ -2207,18 +2213,6 @@ class DetailWindow(ctk.CTkToplevel):
 
         ctk.CTkButton(
             btn_row,
-            text="Archive",
-            command=self._archive,
-            fg_color="transparent",
-            border_color=C_WARNING,
-            border_width=1,
-            text_color=C_WARNING,
-            width=100,
-            height=40,
-        ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(
-            btn_row,
             text="Cancel",
             command=self.destroy,
             fg_color="transparent",
@@ -2322,8 +2316,25 @@ class DetailWindow(ctk.CTkToplevel):
 
         # FR-18: follow_up_date auto-set is handled by database.update_opportunity()
         # (ADR-010: next_monday(date_applied + live config offset)).
+        # ADR-014: changing to a Done status moves the folder to the archive
+        # root, and Done is final, so confirm first.
+        new_status = updates.get("status")
+        if (new_status in DONE_STATUSES and new_status != self.opp["status"]
+                and not self.opp["archived"]):
+            if not messagebox.askyesno(
+                "Archive on Done",
+                f"Saving as {new_status} moves this opportunity's folder and all its "
+                "files to the archive.\n\nDone is final: the record stays in your "
+                "history but can't be reopened.\n\nContinue?",
+                parent=self,
+            ):
+                return  # nothing saved; the window stays open
 
-        database.update_opportunity(self.db_path, self.folder_name, updates)
+        try:
+            database.update_opportunity(self.db_path, self.folder_name, updates)
+        except ArchiveError as error:
+            messagebox.showerror("Not Saved", str(error))
+            return  # keep the window open; nothing changed
         messagebox.showinfo("Saved", "Changes saved successfully.")
         self.destroy()
 
@@ -2344,7 +2355,11 @@ class DetailWindow(ctk.CTkToplevel):
             if isinstance(widget, ctk.IntVar):
                 updates[key] = widget.get()
 
-        database.update_opportunity(self.db_path, self.folder_name, updates)
+        try:
+            database.update_opportunity(self.db_path, self.folder_name, updates)
+        except ArchiveError as error:
+            messagebox.showerror("Not Saved", str(error))
+            return
         messagebox.showinfo("Applied", "Status set to Applied. Follow-up date auto-set.")
         self.destroy()
 
@@ -2368,15 +2383,107 @@ class DetailWindow(ctk.CTkToplevel):
             return
         AnalysisProgressDialog(self, self.opp, self.db_path, self.cfg)
 
-    def _archive(self):
-        """FR-11: Soft-delete the opportunity."""
-        if messagebox.askyesno(
-            "Archive Opportunity",
-            f"Archive '{self.opp['company_name']} — {self.opp['role_title']}'?\n\n"
-            "Archived records remain in the database and can be retrieved.",
-        ):
-            database.archive_opportunity(self.db_path, self.folder_name)
-            self.destroy()
+
+# ─────────────────────────────────────────────
+# Consistency Check Window (ADR-014)
+# ─────────────────────────────────────────────
+
+class ConsistencyWindow(ctk.CTkToplevel):
+    """
+    Lists records whose folder location disagrees with archived, with the
+    repairs ADR-014 allows. Each repair is an explicit choice; nothing is
+    repaired automatically.
+    """
+
+    CASES = {
+        "archive_only_active": "Folder in archive, record active (archive interrupted)",
+        "active_only_archived": "Folder in job search root, record archived",
+        "both_or_neither": "Folder in both roots, or in neither (resolve by hand)",
+        "folder_no_record": "Folder with no record (report only: add a record or move the folder)",
+    }
+
+    def __init__(self, parent, db_path, issues: dict):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.title("Consistency Check")
+        self.geometry("900x560")
+        self.configure(fg_color=C_BG)
+        self.transient(parent)
+        self._frame = None
+        self._render(issues)
+
+    def _render(self, issues: dict):
+        if self._frame is not None:
+            self._frame.destroy()
+        self._frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._frame.pack(fill="both", expand=True, padx=20, pady=20)
+        if not any(issues.values()):
+            ctk.CTkLabel(self._frame, text="No issues. Every folder matches its record.",
+                         text_color=C_SUCCESS, font=ctk.CTkFont(size=14)).pack(anchor="w")
+            self._close_row("Close", "All clear.")
+            return
+        for case, items in issues.items():
+            if not items:
+                continue
+            ctk.CTkLabel(self._frame, text=self.CASES[case], text_color=C_WARNING,
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 4))
+            for item in items:
+                self._row(case, item)
+        self._close_row(
+            "Decide later",
+            "Nothing changes until you choose. Anything left here is listed again at the next launch.",
+        )
+
+    def _close_row(self, text: str, note: str):
+        """Close button and note directly under the list (not pinned to the window bottom)."""
+        row = ctk.CTkFrame(self._frame, fg_color="transparent")
+        row.pack(anchor="w", pady=(14, 0))
+        ctk.CTkButton(row, text=text, command=self.destroy, width=150, height=30,
+                      fg_color=C_ACCENT, hover_color="#c73652").pack(side="left")
+        ctk.CTkLabel(row, text=note, text_color=C_MUTED,
+                     font=ctk.CTkFont(size=12)).pack(side="left", padx=12)
+
+    def _row(self, case: str, item: dict):
+        card = ctk.CTkFrame(self._frame, fg_color=C_CARD, corner_radius=6)
+        card.pack(fill="x", pady=3)
+        ctk.CTkLabel(card, text=f"{item['folder_name']}  ({item['status']})", text_color=C_TEXT,
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=10, pady=(6, 0))
+        ctk.CTkLabel(card, text=f"Job search root: {item['job_path']}\nArchive root:    {item['archive_path']}",
+                     text_color=C_MUTED, justify="left",
+                     font=ctk.CTkFont(size=11, family="Courier")).pack(anchor="w", padx=10)
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.pack(anchor="w", padx=10, pady=6)
+        name = item["folder_name"]
+        if case == "archive_only_active":
+            done_var = ctk.StringVar(value=DONE_STATUSES[0])
+            self._button(actions, "Archive opp as",
+                         lambda: database.repair_complete_archive(self.db_path, name, done_var.get()))
+            ctk.CTkOptionMenu(actions, values=DONE_STATUSES, variable=done_var, width=130, height=30,
+                              fg_color=C_PANEL).pack(side="left")
+            ctk.CTkLabel(actions, text="or", text_color=C_MUTED).pack(side="left", padx=12)
+            self._button(actions, "Restore folder to job search",
+                         lambda: database.repair_restore(self.db_path, name))
+        elif case == "active_only_archived":
+            self._button(actions, "Return folder to archive",
+                         lambda: database.repair_return_to_archive(self.db_path, name))
+            ctk.CTkLabel(actions, text="or", text_color=C_MUTED).pack(side="left", padx=(6, 12))
+            active = [s for s in STATUS_VALUES if s not in DONE_STATUSES]
+            status_var = ctk.StringVar(value=active[0])
+            self._button(actions, "Reactivate opp as",
+                         lambda: database.repair_reactivate(self.db_path, name, status_var.get()))
+            ctk.CTkOptionMenu(actions, values=active, variable=status_var, width=130, height=30,
+                              fg_color=C_PANEL).pack(side="left")
+
+    def _button(self, parent, text: str, repair):
+        ctk.CTkButton(parent, text=text, width=190, height=30, fg_color=C_PANEL,
+                      hover_color=C_BLUE, command=lambda: self._apply(repair)).pack(side="left", padx=(0, 6))
+
+    def _apply(self, repair):
+        try:
+            repair()
+        except (ArchiveError, ValueError) as error:
+            messagebox.showerror("Not Repaired", str(error), parent=self)
+        self._render(database.check_consistency(self.db_path))
 
 
 # ─────────────────────────────────────────────
@@ -2516,7 +2623,8 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
     def _start(self):
         fit_analysis_engine.run_fit_analysis(
             db_path=self.db_path,
-            job_search_root=self.cfg["job_search_root"],
+            # ADR-014: resolve the folder (archive root when archived)
+            job_search_root=str(database.get_folder_path(self.db_path, self.opp).parent),
             folder_name=self.opp["folder_name"],
             resume_path=self.cfg.get("resume_path", ""),
             fit_threshold=self.cfg.get("fit_threshold", 0.65),

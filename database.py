@@ -3,12 +3,21 @@
 # NFR-05: Filesystem is truth — SQLite is a derived, rebuildable index
 
 import logging
+import os
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
 import config
-from models import DB_FILENAME, DEFAULT_STATUS, RETIRED_STATUS_MAP
+import filesystem
+from filesystem import ArchiveError
+from models import (
+    DB_FILENAME,
+    DEFAULT_STATUS,
+    DONE_STATUSES,
+    RETIRED_STATUS_MAP,
+    STATUS_VALUES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +331,28 @@ def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
             applied = date.fromisoformat(updates["date_applied"])
             updates["follow_up_date"] = initial_follow_up(applied).isoformat()
 
+    # ADR-014: every write path (desktop Save, Mark Applied, MCP update_status,
+    # close_opportunity) comes through here, so archive on Done lives here.
+    # Archiving happens when the status changes to a Done status; saving a
+    # record whose status is already Done moves nothing.
+    status = updates.get("status")
+    if status is not None:
+        current = get_opportunity(db_path, folder_name)
+        if (current and status in DONE_STATUSES and status != current["status"]
+                and not current["archived"]):
+            _archive_and_write(db_path, folder_name, updates)
+            return
+        if current and current["archived"] and status not in DONE_STATUSES:
+            raise ArchiveError(
+                f"'{folder_name}' is archived, and Done is final. "
+                "A role that comes back is a new opportunity."
+            )
+
+    _write_opportunity(db_path, folder_name, updates)
+
+
+def _write_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
+    """One UPDATE, one transaction."""
     set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
     sql = f"UPDATE opportunities SET {set_clause} WHERE folder_name = ?"
     with _connect(db_path) as conn:
@@ -329,9 +360,212 @@ def update_opportunity(db_path: Path, folder_name: str, updates: dict) -> None:
         conn.commit()
 
 
+# ── Archive on Done (ADR-014) ─────────────────────────────
+
+def get_roots(db_path: Path) -> tuple[Path, Path]:
+    """Job search root (the database's folder) and the validated archive root."""
+    job_root = Path(db_path).parent
+    archive_root = config.get_archive_root(job_root)
+    filesystem.validate_archive_root(job_root, archive_root)
+    return job_root, archive_root
+
+
+def get_folder_path(db_path: Path, opp: dict) -> Path:
+    """Where this opportunity's folder lives: the archive root when archived."""
+    job_root = Path(db_path).parent
+    return filesystem.resolve_folder_path(
+        job_root, config.get_archive_root(job_root), opp["folder_name"], opp.get("archived")
+    )
+
+
+def _archive_and_write(db_path: Path, folder_name: str, updates: dict) -> None:
+    """Move the folder to the archive root, then write updates with archived = 1
+    in one transaction. If the write fails the folder is moved back."""
+    job_root, archive_root = get_roots(db_path)
+    with filesystem.fs_lock(f"archive {folder_name}"):
+        current = get_opportunity(db_path, folder_name)  # re-read under the lock
+        if current is None:
+            raise ValueError(f"Opportunity '{folder_name}' not found")
+        if current["archived"]:
+            _write_opportunity(db_path, folder_name, updates)
+            return
+        src, dest = job_root / folder_name, archive_root / folder_name
+        filesystem.move_folder(src, dest)
+        try:
+            _write_opportunity(db_path, folder_name, {**updates, "archived": 1})
+        except Exception as error:
+            try:
+                os.rename(dest, src)
+            except OSError as back:
+                raise ArchiveError(
+                    "The status was not saved and the folder could not be moved back. "
+                    f"It is at {dest}; the record expects {src}. The startup "
+                    f"consistency check will list it.\n{error}\n{back}"
+                ) from error
+            raise
+
+
 def archive_opportunity(db_path: Path, folder_name: str) -> None:
-    """FR-11: Soft delete."""
-    update_opportunity(db_path, folder_name, {"archived": 1})
+    """ADR-014: archiving follows Done. Moves the folder of a record that is
+    already in a Done status; refuses any other status."""
+    current = get_opportunity(db_path, folder_name)
+    if current is None:
+        raise ValueError(f"Opportunity '{folder_name}' not found")
+    if current["status"] not in DONE_STATUSES:
+        raise ArchiveError(
+            f"'{folder_name}' is {current['status']}. Set a Done status "
+            f"({', '.join(DONE_STATUSES)}); archiving follows."
+        )
+    if not current["archived"]:
+        _archive_and_write(db_path, folder_name, {"date_modified": date.today().isoformat()})
+
+
+# Company_Role folder names; rebuild_index() uses the same rule
+FOLDER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$"
+
+
+def _folder_state(job_root: Path, archive_root: Path, folder_name: str, archived) -> str | None:
+    """Consistency case (ADR-014): 'archive_only_active' (a),
+    'active_only_archived' (b), 'both_or_neither' (c), or None when consistent."""
+    in_job = (job_root / folder_name).is_dir()
+    in_archive = (archive_root / folder_name).is_dir()
+    if in_job == in_archive:
+        return "both_or_neither"
+    if in_archive and not archived:
+        return "archive_only_active"
+    if in_job and archived:
+        return "active_only_archived"
+    return None
+
+
+def check_consistency(db_path: Path) -> dict:
+    """Report rows whose folder location disagrees with archived (ADR-014),
+    and Company_Role folders with no record (report only). Repairs nothing."""
+    import re
+
+    job_root, archive_root = get_roots(db_path)
+    issues = {"archive_only_active": [], "active_only_archived": [], "both_or_neither": [],
+              "folder_no_record": []}
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT folder_name, status, archived FROM opportunities ORDER BY folder_name"
+        ).fetchall()
+    for row in rows:
+        case = _folder_state(job_root, archive_root, row["folder_name"], row["archived"])
+        if case:
+            issues[case].append({
+                "folder_name": row["folder_name"],
+                "status": row["status"],
+                "archived": row["archived"],
+                "job_path": str(job_root / row["folder_name"]),
+                "archive_path": str(archive_root / row["folder_name"]),
+            })
+    keys = {row["folder_name"].lower() for row in rows}
+    pattern = re.compile(FOLDER_NAME_PATTERN)
+    for root in (job_root, archive_root):
+        for name in filesystem.get_existing_folders(str(root)):
+            if pattern.match(name) and "_" in name and name.lower() not in keys:
+                issues["folder_no_record"].append({
+                    "folder_name": name, "status": "no record", "archived": None,
+                    "job_path": str(job_root / name), "archive_path": str(archive_root / name),
+                })
+    return issues
+
+
+def consistency_lines(issues: dict) -> list[str]:
+    """Plain-text lines for a consistency report."""
+    labels = {
+        "archive_only_active": "Folder in archive, record active",
+        "active_only_archived": "Folder in job search root, record archived",
+        "both_or_neither": "Folder in both roots or neither",
+        "folder_no_record": "Folder with no record",
+    }
+    return [
+        f"{labels[case]}: {item['folder_name']} ({item['status']})"
+        for case, items in issues.items() for item in items
+    ]
+
+
+def _require_case(db_path: Path, folder_name: str, expected: str) -> tuple[Path, Path, dict]:
+    job_root, archive_root = get_roots(db_path)
+    current = get_opportunity(db_path, folder_name)
+    if current is None:
+        raise ValueError(f"Opportunity '{folder_name}' not found")
+    if _folder_state(job_root, archive_root, folder_name, current["archived"]) != expected:
+        raise ArchiveError(f"'{folder_name}' changed since the check ran; run it again.")
+    return job_root, archive_root, current
+
+
+def repair_complete_archive(db_path: Path, folder_name: str, done_status: str) -> None:
+    """Case (a): commit the intended Done status with archived = 1."""
+    if done_status not in DONE_STATUSES:
+        raise ValueError(f"Choose a Done status: {', '.join(DONE_STATUSES)}")
+    with filesystem.fs_lock(f"repair {folder_name}"):
+        _require_case(db_path, folder_name, "archive_only_active")
+        _write_opportunity(db_path, folder_name, {
+            "status": done_status, "archived": 1, "date_modified": date.today().isoformat(),
+        })
+
+
+def repair_restore(db_path: Path, folder_name: str) -> None:
+    """Case (a): move the folder back to the job search root; status unchanged."""
+    with filesystem.fs_lock(f"repair {folder_name}"):
+        job_root, archive_root, _ = _require_case(db_path, folder_name, "archive_only_active")
+        filesystem.move_folder(archive_root / folder_name, job_root / folder_name)
+
+
+def repair_return_to_archive(db_path: Path, folder_name: str) -> None:
+    """Case (b): move the folder back into the archive; Done status unchanged."""
+    with filesystem.fs_lock(f"repair {folder_name}"):
+        job_root, archive_root, _ = _require_case(db_path, folder_name, "active_only_archived")
+        filesystem.move_folder(job_root / folder_name, archive_root / folder_name)
+
+
+def repair_reactivate(db_path: Path, folder_name: str, status: str) -> None:
+    """Case (b): commit the chosen active status with archived = 0."""
+    if status not in STATUS_VALUES or status in DONE_STATUSES:
+        raise ValueError("Choose an active status.")
+    with filesystem.fs_lock(f"repair {folder_name}"):
+        _require_case(db_path, folder_name, "active_only_archived")
+        _write_opportunity(db_path, folder_name, {
+            "status": status, "archived": 0, "date_modified": date.today().isoformat(),
+        })
+
+
+def _taken_folder_names(db_path: Path, job_root: Path, archive_root: Path) -> set[str]:
+    with _connect(db_path) as conn:
+        keys = {row[0] for row in conn.execute("SELECT folder_name FROM opportunities")}
+    return (
+        keys
+        | set(filesystem.get_existing_folders(str(job_root)))
+        | set(filesystem.get_existing_folders(str(archive_root)))
+    )
+
+
+def preview_folder_name(db_path: Path, company_name: str, role_title: str) -> str:
+    """The name creation would use right now (suffixed if the base is in use)."""
+    job_root, archive_root = get_roots(db_path)
+    return filesystem.unique_folder_name(
+        filesystem.generate_folder_name(company_name, role_title),
+        _taken_folder_names(db_path, job_root, archive_root),
+        date.today(),
+    )
+
+
+def create_opportunity_with_folder(db_path: Path, record: dict, create_folder) -> str:
+    """ADR-014: choose a free Company_Role name, create the folder
+    (create_folder(job_root, folder_name)) and insert the record, all while
+    holding the lock. Returns the folder name used."""
+    job_root, archive_root = get_roots(db_path)
+    with filesystem.fs_lock("create opportunity"):
+        folder_name = filesystem.unique_folder_name(
+            filesystem.generate_folder_name(record["company_name"], record["role_title"]),
+            _taken_folder_names(db_path, job_root, archive_root),
+            date.today(),
+        )
+        create_folder(job_root, folder_name)
+        create_opportunity(db_path, {**record, "folder_name": folder_name})
+    return folder_name
 
 
 def get_dashboard_metrics(db_path: Path) -> dict:
@@ -343,9 +577,9 @@ def get_dashboard_metrics(db_path: Path) -> dict:
         ).fetchone()[0]
 
         by_status = {}
+        # Counts archived rows too, so Done history stays visible (ADR-014)
         rows = conn.execute(
-            "SELECT status, COUNT(*) as cnt FROM opportunities "
-            "WHERE archived = 0 GROUP BY status"
+            "SELECT status, COUNT(*) as cnt FROM opportunities GROUP BY status"
         ).fetchall()
         for row in rows:
             by_status[row["status"]] = row["cnt"]
@@ -421,9 +655,6 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
     Deterministic, idempotent. Uses INSERT OR REPLACE.
     Non-conforming folders logged as warnings, not errors.
     """
-    import re
-    import yaml
-
     root = Path(job_search_root)
     report = {
         "folders_scanned": 0,
@@ -433,7 +664,23 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
     }
 
     initialize_database(db_path)
-    folder_name_pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$")
+    with filesystem.fs_lock("rebuild index"):
+        _rebuild_scan(db_path, root, fit_threshold, report)
+    return report
+
+
+def _rebuild_scan(db_path: Path, root: Path, fit_threshold: float, report: dict) -> None:
+    """rebuild_index() body, run while holding the lock (ADR-014)."""
+    import re
+    import yaml
+
+    report["warnings"].extend(consistency_lines(check_consistency(db_path)))
+    with _connect(db_path) as conn:
+        archived_names = {
+            row[0].lower()
+            for row in conn.execute("SELECT folder_name FROM opportunities WHERE archived = 1")
+        }
+    folder_name_pattern = re.compile(FOLDER_NAME_PATTERN)
 
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -444,6 +691,12 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
         if not folder_name_pattern.match(folder_name) or "_" not in folder_name:
             report["warnings"].append(
                 f"Skipped '{folder_name}' — does not match Company_Role convention"
+            )
+            continue
+
+        if folder_name.lower() in archived_names:
+            report["warnings"].append(
+                f"Skipped '{folder_name}' — matches an archived record; record left unchanged"
             )
             continue
 
@@ -514,8 +767,6 @@ def rebuild_index(db_path: Path, job_search_root: str, fit_threshold: float = 0.
             report["records_indexed"] += 1
         except Exception as e:
             report["failures"].append(f"Failed to index '{folder_name}': {e}")
-
-    return report
 
 
 # ── Quick-Fit Log Queries ──────────────────────────────────
@@ -642,17 +893,17 @@ def _parse_location(location_remote_status: str) -> tuple:
     return (loc_type, loc_city)
 
 
-def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
+def promote_quick_fit(db_path: Path, qfl_id: int) -> dict:
     """
-    Promote a quick-fit-log entry to a full pipeline opportunity.
+    Promote a quick-fit-log entry to a full pipeline opportunity, in the
+    job search root that holds the database.
 
     Creates: folder + JD file (pre-populated) + opportunity DB record.
+    The folder name gets a _YYYY-MM suffix if the base name is in use (ADR-014).
     Updates: QFL promoted_to_pipeline=1, promoted_folder_name=folder.
     Returns: dict with folder_name and status.
     Raises: ValueError on validation failure.
     """
-    import filesystem
-
     # Fetch the QFL entry
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -671,40 +922,8 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
             f"Entry #{qfl_id} already promoted to '{existing}'"
         )
 
-    # Generate folder name
     company = entry.get("company_name", "Unknown")
     role = entry.get("role_title", "UnknownRole")
-    folder_name = filesystem.generate_folder_name(company, role)
-
-    # Check for orphaned states before proceeding
-    folder_on_disk = filesystem.folder_exists(job_search_root, folder_name)
-    with _connect(db_path) as conn:
-        existing_opp = conn.execute(
-            "SELECT folder_name FROM opportunities WHERE folder_name = ?",
-            (folder_name,),
-        ).fetchone()
-
-    if existing_opp and not folder_on_disk:
-        # DB orphan: record exists but folder was deleted — clean up the record
-        with _connect(db_path) as conn:
-            conn.execute(
-                "DELETE FROM opportunities WHERE folder_name = ?",
-                (folder_name,),
-            )
-            conn.commit()
-        existing_opp = None  # cleared — proceed normally
-
-    if folder_on_disk and not existing_opp:
-        # Folder orphan: folder exists but no DB record (e.g. prior promote
-        # created folder then crashed before DB insert) — skip folder creation,
-        # just create the DB record below
-        pass
-    elif folder_on_disk and existing_opp:
-        # Both exist — genuine duplicate
-        raise ValueError(
-            f"Folder '{folder_name}' already exists with a pipeline record. "
-            "Use the existing opportunity or rename."
-        )
 
     # Parse location
     loc_type, loc_city = _parse_location(
@@ -716,18 +935,10 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
         entry.get("source_channel", "other"), "Other"
     )
 
-    # Create folder with pre-populated JD (skip if folder already exists)
     artifact_text = entry.get("opportunity_artifact") or ""
     job_url = entry.get("job_url") or None
-    if not folder_on_disk:
-        filesystem.create_opportunity_folder_with_jd(
-            job_search_root, folder_name, company, role, artifact_text,
-            job_url=job_url,
-        )
 
-    # Build and insert opportunity record
     record = {
-        "folder_name": folder_name,
         "company_name": company,
         "role_title": role,
         "job_url": job_url,
@@ -737,7 +948,13 @@ def promote_quick_fit(db_path: Path, qfl_id: int, job_search_root: str) -> dict:
         "decision_notes": entry.get("notes") or "",
         "status": DEFAULT_STATUS,
     }
-    create_opportunity(db_path, record)
+    # Folder (with pre-populated JD) and record are created under the lock
+    folder_name = create_opportunity_with_folder(
+        db_path, record,
+        lambda root, name: filesystem.create_opportunity_folder_with_jd(
+            str(root), name, company, role, artifact_text, job_url=job_url,
+        ),
+    )
 
     # Mark QFL entry as promoted
     with _connect(db_path) as conn:

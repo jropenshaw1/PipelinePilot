@@ -66,7 +66,9 @@ def pipi_update_status(folder_name: str, status: str) -> object:
     """Update an opportunity lifecycle status.
 
     Status is one of: Analyzing, Ready, Applied, Pursuing, Interviewing, Offer,
-    Passed, Rejected, Ghosted, Closed (ADR-014).
+    Passed, Rejected, Ghosted, Closed (ADR-014). A Done status (Passed, Rejected,
+    Ghosted, Closed) moves the opportunity folder to the archive root and sets
+    archived; if the folder cannot be moved, nothing changes and an error is returned.
     """
     return tools.update_status(folder_name, status)
 
@@ -96,14 +98,20 @@ def pipi_close_opportunity(folder_name: str, status: str,
                            communication_notes: str | None = None) -> object:
     """Set a terminal status and optionally record communication notes.
 
-    Status is one of: Passed, Rejected, Ghosted, Closed (ADR-014).
+    Status is one of: Passed, Rejected, Ghosted, Closed (ADR-014). The folder
+    moves to the archive root and archived is set; if the folder cannot be
+    moved, nothing changes and an error is returned.
     """
     return tools.close_opportunity(folder_name, status, communication_notes)
 
 
 @mcp.tool()
 def pipi_archive_opportunity(folder_name: str) -> object:
-    """Soft-archive an opportunity."""
+    """Archive a Done opportunity: move its folder to the archive root.
+
+    Refused unless the status is already Done; a Done status change archives
+    automatically (ADR-014), so this is rarely needed.
+    """
     return tools.archive_opportunity(folder_name)
 
 

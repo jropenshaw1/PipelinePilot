@@ -112,3 +112,11 @@ AGENT_VAULT_ACCOUNT_KEY = "agent_vault_account"
 OB_KEY_VAULT_ID_KEY = "ob_key_vault_id"
 ANTHROPIC_KEY_VAULT_ID_KEY = "anthropic_key_vault_id"
 DCLI_PATH_KEY = "dcli_path"
+
+# Archive on Done (ADR-014)
+ARCHIVE_ROOT_KEY = "archive_root"
+DEFAULT_ARCHIVE_DIRNAME = "001_ArchiveJobSearch"
+FOLDER_NAME_MAX = 60          # rebuild_index() enforces this length
+WINDOWS_MAX_PATH = 260        # a full path must stay below this
+LOCK_FILENAME = "pipi_fs.lock"
+LOCK_STALE_SECONDS = 600      # a lock this old whose process is gone is stale

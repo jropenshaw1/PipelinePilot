@@ -92,7 +92,7 @@ def test_url_flows_through_import_and_promote(root, db):
     row = _qfl(db)[0]
     assert row["job_url"] == URL
 
-    result = database.promote_quick_fit(db, row["id"], str(root))
+    result = database.promote_quick_fit(db, row["id"])
     opp = database.get_opportunity(db, result["folder_name"])
     assert opp["job_url"] == URL
 
@@ -105,7 +105,7 @@ def test_pre_adr_entry_without_url_imports_and_promotes(root, db):
     row = _qfl(db)[0]
     assert row["job_url"] is None
 
-    result = database.promote_quick_fit(db, row["id"], str(root))
+    result = database.promote_quick_fit(db, row["id"])
     assert database.get_opportunity(db, result["folder_name"])["job_url"] is None
     jd = next((root / result["folder_name"]).glob("JD_*.txt")).read_text(encoding="utf-8")
     assert "Job URL: \n" in jd
