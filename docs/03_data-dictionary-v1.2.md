@@ -1,13 +1,14 @@
 # PipelinePilot — Data Dictionary
 
-**Version:** 1.1  
-**Date:** August 7, 2026  
+**Version:** 1.2  
+**Date:** October 28, 2026  
 **Author:** Jonathan Openshaw  
 **Status:** Approved
 
 **Change Log:**
 - **v1.0** (March 7, 2026) — Initial release
 - **v1.1** (August 7, 2026) — Added `posting_status_log` field (ADR-009). Restored `action_items` to task-only scope (ADR-009). Added "Ghosted" to status lifecycle (ADR-009). Corrected follow-up offset to 14 days with Monday-snap behavior (ADR-010). Added multi-select status filtering (ADR-011). Pursuit tracker columns (`cl_reviewed`, `resume_reviewed`, `jfa_completed`) documented (previously added via migration 006 without Data Dictionary update).
+- **v1.2** (October 28, 2026) — Status model v2 (ADR-014): ten statuses in three groups, Ready added, New / Capturing / In Review retired, Offer no longer terminal, default status Analyzing. Archive on Done: `archived` set with the folder move to the archive root; optional `archive_root` config key; folder-name suffix on reuse.
 
 ---
 
@@ -44,6 +45,8 @@ The folder name (`Company_Role`) is the **primary key** across both representati
 | AT&T | Director, IT | `ATT_Director_IT` |
 | Choice Hotels International | Sr. Director Cloud Infrastructure | `ChoiceHotelsInternational_SrDirectorCloudInfrastructure` |
 | Cambridge Investment Research | VP IT Infrastructure & Operations | `CambridgeInvestmentResearch_VPITInfrastructureOperations` |
+
+**Reuse:** if a generated name is already in use (checked case-insensitively against database keys and folders under the job search root and the archive root), a `_YYYY-MM` suffix is added, then `_YYYY-MM-2`, `_YYYY-MM-3` and so on, with the base shortened so the full name stays within 60 characters (ADR-014).
 
 **Rule:** Folder name is previewed and confirmed by User before creation. Once created, it is never renamed without using PipelinePilot — a manual rename breaks the primary key link.
 
@@ -124,7 +127,7 @@ top_gaps:                 # List of 2–5 strings
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| `status` | TEXT | NOT NULL | "New" | Lifecycle status: New / Capturing / Analyzing / Pursuing / Passed / Applied / In Review / Interviewing / Offer / Closed / Ghosted / Rejected |
+| `status` | TEXT | NOT NULL | "New" (schema); every insert path sets "Analyzing" | Lifecycle status (ADR-014): Analyzing / Ready / Applied / Pursuing / Interviewing / Offer / Passed / Rejected / Ghosted / Closed. See §6 for groups. |
 | `date_applied` | DATE | NULL | — | Date application submitted |
 | `confirmation_email` | TEXT | NULL | — | Paste area for confirmation email text content |
 | `contact_name` | TEXT | NULL | — | Recruiter or hiring manager name |
@@ -162,22 +165,31 @@ top_gaps:                 # List of 2–5 strings
 |---|---|---|---|---|
 | `date_created` | DATE | NOT NULL | Current date | Auto-set on record creation. Never modified. |
 | `date_modified` | DATE | NOT NULL | Current date | Auto-updated on any field change |
-| `archived` | INTEGER | NOT NULL | 0 | Boolean (0/1). Soft delete — archived records remain queryable |
+| `archived` | INTEGER | NOT NULL | 0 | Boolean (0/1). Set to 1 when the opportunity enters a Done status and its folder moves to the archive root (ADR-014). Archived records remain queryable and are excluded from active views. |
 
 ---
 
 ## 6. Status Lifecycle
 
 ```
-New → Capturing → Analyzing → Pursuing → Applied → In Review → Interviewing → Offer
-                                       ↓                                          ↓
-                                     Passed                                    Closed
-                                                                                  ↑
-                                                              Rejected ←──────────┘
-                                                              Ghosted  ←──────────┘
+Analyzing → Ready → Applied → Pursuing → Interviewing → Offer
+    ↓         ↓        ↓          ↓            ↓           ↓
+  Passed   Passed   Rejected / Ghosted / Closed (any stage after Ready)
 ```
 
-**Terminal statuses:** Passed / Offer / Closed / Ghosted / Rejected
+| Group (ADR-014) | Statuses | Meaning |
+|---|---|---|
+| My move | Analyzing, Ready, Offer | The next action is the user's |
+| Their move | Applied, Pursuing, Interviewing | Waiting on the employer or recruiter |
+| Done | Passed, Rejected, Ghosted, Closed | Terminal; folder moves to the archive root and `archived` is set |
+
+- **Analyzing:** imported or created, awaiting fit analysis or a decision. Default for every new record.
+- **Ready:** analysis done, decided to apply, not yet submitted.
+- **Applied:** submitted. For recruiter-submitted roles: right-to-represent signed and submission details sent.
+- **Pursuing:** still live after the first follow-up.
+- **Interviewing:** in an interview loop, including recruiter screens before the client conversation.
+
+**Terminal statuses:** Passed / Rejected / Ghosted / Closed. Offer is not terminal (ADR-014). A role that returns after Done is a new opportunity record.
 
 **Ghosted** (v1.1): Indicates no employer response despite confirmed application and active posting tracking. Distinct from Closed (user-initiated withdrawal or posting removed without tracking) and Rejected (explicit employer communication declining the candidate). Supports post-mortem analytics: ghost rate by company, time to ghost, posting duration before disappearance.
 
@@ -199,6 +211,7 @@ New → Capturing → Analyzing → Pursuing → Applied → In Review → Inter
 | `ob_key_vault_id` | For OpenBrain | — | Dashlane item ID for the OpenBrain credential; not the credential value. |
 | `anthropic_key_vault_id` | For Job Fit Analyst | — | Dashlane item ID for the Anthropic credential; not the credential value. |
 | `dcli_path` | No | `dcli` from `PATH` | Optional full path to the Dashlane CLI executable. |
+| `archive_root` | No | `001_ArchiveJobSearch`, sibling of `job_search_root` | Folder that receives opportunity folders when they enter a Done status (ADR-014). |
 
 The retired plaintext keys `ob_supabase_key` and `anthropic_api_key` are not read. Runtime credentials are retrieved per operation and are not persisted by PipelinePilot.
 

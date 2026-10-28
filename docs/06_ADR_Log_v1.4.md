@@ -1,7 +1,7 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
-**Version:** 1.3
-**Date:** October 12, 2026
+**Version:** 1.4
+**Date:** October 28, 2026
 **Author:** Jonathan Openshaw
 **Standard:** Michael Nygard ADR Format
 **Status:** Approved
@@ -11,6 +11,7 @@
 - **v1.1** (August 7, 2026) — ADR-009 (Posting Status Log, Action Items Scope, Ghosted Status), ADR-010 (Follow-Up Date Standardization), ADR-011 (Multi-Select Status Filtering)
 - **v1.2** (October 6, 2026) — ADR-012 (Carry job_url Through OB Import and Promote)
 - **v1.3** (October 12, 2026) — ADR-013 (Credentials by Vault Reference — No Secrets in pipelinepilot.config)
+- **v1.4** (October 28, 2026) — ADR-014 (Status Model v2 and Archive on Done)
 
 ---
 
@@ -599,3 +600,101 @@ Reviewed under Jonathan's multi-model review gate before acceptance: Claude (aut
 *ADRs 009–011 added August 7, 2026, driven by follow-up maintenance skill design work and data analysis of all 197 pipeline records.*
 *ADR-012 added October 6, 2026, after tracing why job URLs captured at quick-fit never reached promoted opportunities.*
 *ADR-013 added October 12, 2026, after a security review found live API keys in plain text in the config file; reviewed by Claude, ChatGPT, Gemini and Perplexity before acceptance.*
+
+---
+
+## ADR-014: Status Model v2 and Archive on Done
+
+**Date:** October 28, 2026
+**Status:** Accepted (Jonathan Openshaw, October 28, 2026). Implementation pending.
+**Amends:** ADR-009 (terminal statuses), ADR-011 (status filtering defaults)
+
+### Context
+
+After eight months of daily use, the 12-value status list no longer matches how the pipeline is worked:
+
+1. **Three statuses are unused.** A status count on 2026-10-28 (303 opportunities) found none in New, Capturing or In Review. New and Capturing are still hard-coded as defaults in four places (desktop new-opportunity form, `create_opportunity()`, `promote_quick_fit()`, and new folders found by `rebuild_index()`), so every promoted quick-fit enters as Capturing and is later moved to Analyzing. In Review drifted from employer-portal wording and is in practice Applied or Pursuing.
+2. **No state for "analyzed, decided to apply, not yet submitted."** Those opportunities stay in Analyzing next to fresh imports, and the Pursuit Tracker (which queries Capturing, Analyzing and Pursuing) mixes three different kinds of work: new intake, roles waiting to be submitted, and live applications past their first follow-up. Its checklist columns (fit analysis completed, cover letter reviewed, resume reviewed) only apply before submission.
+3. **Pursuing changed meaning.** It is now set at the first follow-up after Applied (roughly two weeks in), not before application.
+4. **Offer is listed as terminal** in `TERMINAL_STATUSES` even though an offer needs a decision.
+5. **Done opportunities crowd the active tree.** 253 of 303 folders under the job search root are in a terminal status. They slow the Opportunities view (every status loads by default), clutter Explorer, and block reuse of a `Company_Role` folder name when the same employer reposts the role, which the pipeline treats as a new opportunity.
+
+### Decision
+
+**1. Ten statuses in three groups, by whose move it is.**
+
+| Group | Statuses |
+|---|---|
+| My move | Analyzing, Ready, Offer |
+| Their move | Applied, Pursuing, Interviewing |
+| Done | Passed, Rejected, Ghosted, Closed |
+
+- **Ready** (new): fit analysis done, decided to apply, not yet submitted.
+- **Retired:** New, Capturing, In Review. All four hard-coded defaults become **Analyzing**.
+- **Offer** leaves `TERMINAL_STATUSES`. **In Review** leaves `POST_APPLICATION_STATUSES`.
+- `models.py` gains `STATUS_GROUPS` (the table above) and `DONE_STATUSES`, which equals `TERMINAL_STATUSES` (Passed, Rejected, Ghosted, Closed).
+- **Applied, for recruiter-submitted roles,** means the right-to-represent is signed and submission details are sent. A recruiter screen before the client conversation is Interviewing.
+
+**2. Views follow the groups.**
+
+- The Opportunities status filter offers the three groups plus individual statuses, and defaults to My move + Their move instead of All.
+- **Pursuit Tracker becomes the Application Queue:** Analyzing and Ready only, Ready listed first. Its checklist columns (`jfa_completed`, `cl_reviewed`, `resume_reviewed`) are application-preparation tasks, so they stay with this view.
+- **Live applications** (Applied, Pursuing, Interviewing) are worked from Follow-ups Due, which already lists them by follow-up date, and from the Opportunities filter set to Their move. No separate tracker view is added.
+
+**3. Archive on Done.** When an opportunity's status changes to a Done status, through any write path (desktop edit, MCP `pipi_update_status`, MCP `pipi_close_opportunity`), PipelinePilot moves its folder from the job search root to the archive root and sets `archived = 1`, through one database function that every path calls.
+
+- **Archive root:** `001_ArchiveJobSearch`, a sibling of the job search root, inside the same cloud-synced tree so it keeps the same backup protection. Optional config key `archive_root` overrides the default. At startup PipelinePilot refuses an archive root that is the job search root, is inside it, or contains it, and one on a different volume.
+- **The move is a same-volume rename** (`os.rename`), never copy-then-delete and never an overwrite. A missing source folder or an existing destination folder refuses the change and reports both paths. A completed local rename does not mean the cloud copy has synced; PipelinePilot does not claim it has.
+- **Path length:** before moving, the longest file path the move would produce is checked against the Windows 260-character limit. The archive root name is 8 characters longer than the job search root name, and artifact file names repeat the folder name, so a path that fits today can exceed the limit after the move. An item over the limit is refused with the offending path; nothing moves.
+- **Order and failure handling:** the folder moves first. `PermissionError` or `OSError` on the move (a file open in Word, a OneDrive lock) refuses the status change with a plain message to the desktop app or MCP client, and nothing changes. The status and `archived` are then written in a single database transaction. If that write fails, the folder is renamed back. If the rename back also fails, the error names both paths and the consistency check (below) reports the record until it is resolved.
+- **Concurrency:** archive, opportunity creation and promote, `rebuild_index()` and the migration script each hold one lock file for the duration of the operation. The lock lives **outside the cloud-synced tree**, in `%LOCALAPPDATA%\PipelinePilot\pipi_fs.lock`, created with exclusive-create: a lock file inside OneDrive would be uploaded on every create and delete, could be held open by the sync client at the moment PipelinePilot tries to remove it, and could reach another machine as a stale or conflicting copy. The desktop app and the MCP server run as the same Windows user, so both resolve the same path. The lock coordinates processes on one machine only; running PipelinePilot against the same database from two machines at once is unsupported, as it already was. While holding it they re-read the row and re-check both paths. If the lock is held, the request is refused with a message ("another PipelinePilot operation is in progress; retry"). The lock records process ID and start time; a lock older than 10 minutes whose process is gone is treated as stale and removed with a log entry. A Done request for a record that is already archived changes the status only and moves nothing. Writes to other fields of an archived record are allowed and move nothing.
+- **Consistency check:** at desktop startup and before every `rebuild_index()`, PipelinePilot lists (a) rows with `archived = 0` whose folder exists only under the archive root, (b) rows with `archived = 1` whose folder exists only under the job search root, and (c) rows whose folder exists in both or neither. It reports them; nothing is repaired automatically and no folder is moved or overwritten without the user's choice. Each repair is an explicit lifecycle decision, committed with `archived` in one transaction:
+  - (a) Folder in the archive, record active (an archive interrupted after the rename): **Complete archive**, where the user picks the intended Done status and it is committed with `archived = 1`; or **Restore**, which renames the folder back to the job search root and keeps the previous status.
+  - (b) Folder in the active tree, record archived (an undo or rename-back interrupted, or a hand copy): **Return to archive**, which renames the folder back into the archive and keeps the Done status; or **Reactivate**, where the user picks an active status and it is committed with `archived = 0`.
+  - (c) Folder in both or neither: reported with both paths for the user to resolve by hand; no repair offered.
+- **The database row stays,** with `archived = 1`. Views, the dashboard and stats already exclude `archived = 1`; counts and history are kept. `rebuild_index()` already never deletes rows and scans only the job search root, so archived folders are not rebuilt into the active pipeline. It also skips, with a warning, any folder under the job search root whose name matches a row with `archived = 1` (a folder copied back by hand), and leaves that row unchanged.
+- **Path resolution:** every place that opens or reads an opportunity's folder resolves the path through one function that returns the archive location when `archived = 1`.
+- **Done is final.** A role that comes back, from a repost or an employer reaching out again, is a new opportunity record (existing pipeline rule). There is no un-archive path in the app.
+- **Folder-name reuse:** if a generated `Company_Role` name is already in use, checked case-insensitively (Windows rules) against database keys, folders under the job search root and folders under the archive root, a `_YYYY-MM` suffix is added; if that is also in use, `_YYYY-MM-2`, `_YYYY-MM-3` and so on. The base is shortened as needed so the full name stays within the 60-character limit `rebuild_index()` enforces. The name is chosen and the folder created while holding the lock.
+
+**4. Retired values.** At startup, any row still holding a retired status is mapped (New and Capturing to Analyzing, In Review to Applied) and each change is logged. This covers a restored older backup or an older writer.
+
+**5. Recovery boundary.** Status has always lived only in SQLite; this ADR does not change that but makes it explicit. A fresh `rebuild_index()` from an empty database recovers the active opportunity folders and their file-derived fields only: statuses default to Analyzing, and archived records, dates and lifecycle history are not recovered. The database backup is the recovery path for lifecycle data, and OpenBrain holds the quick-fit and status-update record. `tools/pp_backup_restore.py` already backs up the database with SQLite's online backup API and runs `integrity_check` on source and copy; its scope is extended to include the archive root, so archived folders stay backed up after they leave the job search root.
+
+**6. One-time archive of existing Done folders**, `migrations/archive_done_folders.py`:
+
+- **Refuses to run while PipelinePilot or its MCP server is running** (the same process check the restore tool uses) and holds the lock file for the whole run.
+- **Dry run by default.** It lists every opportunity in a Done status whose folder is under the job search root, with source and destination paths, and flags conflicts: destination exists, source missing, path over 260 characters, and files that appear to be open. The open-file check is best effort; every condition is checked again at apply time.
+- `--apply` first runs the backup (database, job search root and archive root) and refuses to continue unless it reports PASS; the manifest records the backup folder name. For each item the manifest records its progress. During the run the manifest is written to `%LOCALAPPDATA%\PipelinePilot\archive_manifest_<timestamp>.json` and rewritten atomically after every step, outside OneDrive so the sync client cannot hold it open mid-replace. When the run ends, including after a failure, it is copied to `logs/` in the PipelinePilot folder (gitignored, cloud-synced) so the record is backed up; `--resume` and `--undo` accept either copy. The manifest records `intent` before the rename, `moved` after it, and `db_done` after the database commit, together with source path, destination path and the previous `archived` value. An item that fails is recorded with its error and the run continues with the next item; the summary lists every failure.
+- **Resume:** re-running `--apply` with `--resume <manifest>` completes items in `intent` or `moved` state after checking where the folder actually is. Items in `db_done` are skipped.
+- `--undo <manifest>` reverses items in reverse order. Before each one it checks that the folder is at the destination, nothing exists at the source, and the row's `archived` is still 1. An item that fails a check is skipped and reported, never overwritten. Undo can be re-run safely. The backup is the second line of defence.
+- It touches no other columns and no other folders.
+
+### Alternatives Considered
+
+- **Keep In Review as a pre-application state for recruiter-led roles.** Rejected: with the RTR rule, a recruiter-led role is Applied from submission, and a separate state adds a status without changing what the user does next.
+- **Rebuild indexes the archive root as archived records.** Rejected: the user's intent is that the active index reflects only current work. Archived rows already persist in the database because rebuild never deletes, and OpenBrain keeps the full record.
+- **Delete the database row on archive.** Rejected: loses dashboard history and would orphan `interviews` rows that reference `opportunities(folder_name)`.
+- **Archive folder inside the job search root** (`00_JobSearch\Archive`). Rejected: the rebuild scan and Explorer view would still include it, and a folder named without an underscore produces a rebuild warning on every run.
+- **Keep a Pursuit Tracker for Pursuing and Interviewing alongside a new Application Queue.** Rejected: it would duplicate Follow-ups Due, and its checklist columns do not apply after submission.
+- **A full write-ahead operation journal for every archive** (review suggestion). Not adopted for the single-record path: the lock, the single-transaction write and the startup consistency check cover the interruption cases for a single-user tool with far less code. Because a crash between the rename and the commit loses the requested Done status, every repair asks the user for the lifecycle outcome rather than inferring it from folder location. The migration script, which moves about 250 folders in one run, does use a per-item journal.
+- **Shorten all folder names (to 48 characters) to stay under the Windows path limit** (review suggestion). Not adopted: artifact file names repeat the folder name, so a shorter folder name alone does not bound the full path. A per-move check of the longest resulting path does.
+- **Archive on a manual button only.** Rejected: 253 folders accumulated because closing a role and tidying its folder were separate steps.
+
+### Consequences
+
+- `models.py`: `STATUS_VALUES` (10 values), `TERMINAL_STATUSES` without Offer, `POST_APPLICATION_STATUSES` without In Review, new `STATUS_GROUPS` and `DONE_STATUSES`.
+- `database.py`: four default statuses change to Analyzing; status writes to a Done status call the paired archive operation; folder-name collision suffix in creation and promote.
+- `filesystem.py`: same-volume rename to the archive root, path-length check, `archive_root` resolver and validation, folder-path resolver, lock file helper (lock and in-progress manifests under `%LOCALAPPDATA%\PipelinePilot\`, never in the synced tree).
+- `tools/pp_backup_restore.py`: backup and restore scope extended to the archive root.
+- `pipelinepilot.py`: grouped status filter with the new default; Pursuit Tracker renamed Application Queue and queried on Analyzing and Ready; Ready in the status picker.
+- `mcp_server/tools.py`: status validation follows `STATUS_VALUES`; `pipi_close_opportunity` and `pipi_update_status` archive through the same database function. The MCP tool descriptions list the new statuses.
+- `fit_analysis_engine.py` still promotes New or Capturing to Analyzing. Left unchanged per CLAUDE.md; with no rows in those statuses the branch never runs, and it can be removed when that file is next opened for another reason.
+- The quick-fit skill's status-update vocabulary is separate (OpenBrain enum) and is unchanged by this ADR.
+- No schema change: `archived` already exists. The `status` column's SQL default stays `'New'` (SQLite cannot change a column default without rebuilding the table, and the canonical `SCHEMA` is not modified); every insert path sets the status explicitly, so the default is never used. New optional config key `archive_root`.
+- Data Dictionary v1.2 updates §5.3 status values, §5.7 `archived`, §6 lifecycle and §7 config keys. The Data Dictionary and the MCP tool descriptions are updated in the same change set as the implementation, and both move from Proposed to current with it.
+- Tests: status grouping constants; Done transition moves the folder and sets `archived`; move failure (`PermissionError`) leaves status unchanged; database failure renames the folder back; rollback failure is reported by the consistency check, and each repair choice (Complete archive, Restore, Return to archive, Reactivate) commits status and `archived` together; lock contention refuses; repeated Done request; repeated suffix collisions and case-insensitive matches; path-length refusal; retired-value mapping; migration dry run, apply, interrupted apply plus resume, and undo with a conflicting item, against a scratch root and a database copy.
+
+### Review
+
+Reviewed under Jonathan's multi-model review gate before acceptance: Claude (author), Gee (ChatGPT) and Mini (Gemini). Round 1: both returned APPROVE_WITH_CHANGES (Gee six blocking findings, Mini two). Revision 2 addressed every finding, substituting a different fix in two places: no write-ahead journal for single-record archives, and a per-move path-length check instead of 48-character folder names. Jonathan moved the lock file and in-progress migration manifest outside the cloud-synced tree. Confirmation round: Mini confirmed revision 2; Gee objected that the consistency check's repair could not recover the intended Done status after an interrupted archive. Revision 3 made every repair an explicit lifecycle decision committed with `archived`; Gee and Mini both confirmed revision 3 and accepted both substitutions.
