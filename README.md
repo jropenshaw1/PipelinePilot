@@ -113,9 +113,9 @@ These constraints keep the system understandable, recoverable, and durable.
 - **OpenBrain import** -- one-click import of quick-fit-log entries from Supabase-backed AI memory into SQLite, with server-side filtering, pagination, idempotent dedup, and a diagnostic summary that gives the reason for every rejected entry
 - **Quick-fit log viewer** -- color-coded table of triage decisions with decision filtering and summary metrics
 - **Fit analysis integration** -- parses YAML front-matter from `fit_analysis.md` to index score, recommendation, strengths, and gaps without duplicating reasoning
-- **Pursuit tracker** -- filtered view of active pursuits (Analyzing/Pursuing) with checklist columns for JFA completion, cover letter review, and resume review
+- **Application Queue** -- opportunities still to be submitted (Ready first, then Analyzing) with checklist columns for JFA completion, cover letter review, and resume review. Live applications are worked from Follow-ups Due and the Their move filter (ADR-014)
 - **Follow-ups due** -- persistent sidebar link with live count badge; drill-down view of overdue follow-ups sorted by date
-- **Mark Applied one-click** -- sets status, date applied, and follow-up date in a single action from either the pursuit tracker or the detail view
+- **Mark Applied one-click** -- sets status, date applied, and follow-up date in a single action from either the Application Queue or the detail view
 - **Monday follow-ups** -- every follow-up date lands on a Monday: the first one after the configured offset (Settings, default 14 days), and the next Monday after each still-posted check. Changing the offset in Settings takes effect immediately everywhere
 - **Posting status log** -- machine-maintained record of every "still posted" check and the date a posting disappeared, kept separate from action items
 - **MCP server** -- local MCP server that lets Claude Desktop query and update the pipeline directly, for conversational follow-up maintenance. See [`mcp_server/README.md`](mcp_server/README.md)

@@ -147,7 +147,7 @@ class PipelinePilotApp(ctk.CTk):
             ("📋  Opportunities", self._show_list),
             ("⚡  Quick-Fit Log", self._show_quick_fit_log),
             ("📅  Follow-ups Due", self._show_followups),
-            ("🎯  Pursuit Tracker", self._show_pursuit_tracker),
+            ("🎯  Application Queue", self._show_application_queue),
             ("📥  Import from OB", self._run_ob_import),
             ("⚙️  Settings", self._show_settings),
         ]
@@ -1532,27 +1532,26 @@ class PipelinePilotApp(ctk.CTk):
         detail = DetailWindow(self, folder_name, self.db_path, self.cfg)
         self.wait_window(detail)
         # Return to wherever the user navigated from
-        if hasattr(self, "_return_to_pursuit") and self._return_to_pursuit:
-            self._return_to_pursuit = False
-            self._show_pursuit_tracker()
+        if hasattr(self, "_return_to_queue") and self._return_to_queue:
+            self._return_to_queue = False
+            self._show_application_queue()
         else:
             self._show_list()
 
-    # ── Pursuit Tracker View ──────────────────
+    # ── Application Queue View (ADR-014) ──────
 
-    def _show_pursuit_tracker(self):
-        """Pursuit tracker: filtered view of Pursuing/Analyzing opportunities with checklist columns."""
+    def _show_application_queue(self):
+        """Application Queue: Ready then Analyzing opportunities, with the preparation checklist columns."""
         self._clear_content()
 
         if not self.db_path:
             self._show_first_launch()
             return
 
-        # Fetch Capturing, Analyzing, and Pursuing status opportunities
-        capturing = database.get_all_opportunities(self.db_path, status_filter="Capturing")
+        # Ready first (decided, waiting to be submitted), then Analyzing (ADR-014)
+        ready = database.get_all_opportunities(self.db_path, status_filter="Ready")
         analyzing = database.get_all_opportunities(self.db_path, status_filter="Analyzing")
-        pursuing = database.get_all_opportunities(self.db_path, status_filter="Pursuing")
-        opportunities = capturing + analyzing + pursuing
+        opportunities = ready + analyzing
 
         outer = ctk.CTkFrame(self.content, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=24, pady=24)
@@ -1565,7 +1564,7 @@ class PipelinePilotApp(ctk.CTk):
 
         ctk.CTkLabel(
             header,
-            text=f"🎯 Pursuit Tracker  ({len(opportunities)})",
+            text=f"🎯 Application Queue  ({len(opportunities)})",
             font=ctk.CTkFont(size=22, weight="bold"),
             text_color=C_TEXT,
         ).pack(side="left")
@@ -1578,8 +1577,8 @@ class PipelinePilotApp(ctk.CTk):
         if not opportunities:
             ctk.CTkLabel(
                 list_container,
-                text="No opportunities in Capturing, Analyzing, or Pursuing status.\n"
-                     "Capture or promote an opportunity to get started.",
+                text="Nothing in Ready or Analyzing.\n"
+                     "Promote a quick-fit or capture an opportunity to get started.",
                 text_color=C_MUTED,
                 font=ctk.CTkFont(size=13),
                 justify="center",
@@ -1609,15 +1608,15 @@ class PipelinePilotApp(ctk.CTk):
             ).pack(side="left", padx=4)
 
         for opp in opportunities:
-            self._pursuit_row(list_container, opp)
+            self._queue_row(list_container, opp)
 
-    def _pursuit_row(self, container, opp: dict):
-        """Render a single pursuit tracker row with checklist columns."""
+    def _queue_row(self, container, opp: dict):
+        """Render a single Application Queue row with checklist columns."""
         row = ctk.CTkFrame(container, fg_color=C_CARD, corner_radius=8, cursor="hand2")
         row.pack(fill="x", pady=3)
 
         def open_detail(*_):
-            self._return_to_pursuit = True
+            self._return_to_queue = True
             self._open_detail(opp["folder_name"])
 
         row.bind("<Button-1>", open_detail)
@@ -1703,7 +1702,7 @@ class PipelinePilotApp(ctk.CTk):
             "date_applied": today_str,
             "follow_up_date": follow_up,
         })
-        self._show_pursuit_tracker()
+        self._show_application_queue()
 
     # ── Config helpers ─────────────────────────
 
@@ -2152,8 +2151,8 @@ class DetailWindow(ctk.CTkToplevel):
         self._field_check(main, "Decision Override (overrides Job Fit Analyst recommendation)", "decision_override")
         self._field_area(main, "Decision Notes", "decision_notes")
 
-        # ── Pursuit Checklist ──
-        self._section(main, "Pursuit Checklist")
+        # ── Application Checklist ──
+        self._section(main, "Application Checklist")
         self._field_check(main, "JFA completed", "jfa_completed")
         self._field_check(main, "Cover letter reviewed", "cl_reviewed")
         self._field_check(main, "Resume reviewed", "resume_reviewed")
