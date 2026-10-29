@@ -1,7 +1,7 @@
 # PipelinePilot MCP Server — Product Requirements Document
 
-**Version:** 1.4  
-**Date:** August 7, 2026  
+**Version:** 1.5  
+**Date:** October 28, 2026  
 **Author:** Jonathan Openshaw  
 **Drafter:** Claude (Anthropic)  
 **Status:** Implemented
@@ -12,6 +12,7 @@
 - **v1.2** — Corrected SQL logging target from stdout to stderr (stdio MCP protocol conflict, raised by Codex during implementation planning); documented `PIPI_MCP_DB_PATH` test override; documented known follow-up offset inconsistency between Data Dictionary and code
 - **v1.3** — Post-implementation corrections. Tool count corrected from 16 to 15 in §11 (arithmetic error in the Definition of Done; the §6 table was always correct). Replaced the §9.3 log format example with output actually captured from the SQLite trace callback. Noted scenario 17's deferred live verification.
 - **v1.4** — Schema change: added `posting_status_log` column (ADR-009). `pipi_log_still_posted` writes to `posting_status_log` instead of `action_items`. `pipi_close_opportunity` drops `ghosted` boolean parameter; "Ghosted" added as terminal status (ADR-009). Follow-up dates snap to next Monday, initial offset driven by config at 14 days (ADR-010). `pipi_query_pipeline` accepts multi-select `status_filter` (ADR-011). Resolved §7.3 known inconsistency.
+- **v1.5** — Status model v2 and archive on Done (ADR-014). Ten statuses; Offer no longer terminal. A change to a Done status through `pipi_update_status` or `pipi_close_opportunity` moves the opportunity folder to the archive root and sets `archived` (§7.5). `pipi_archive_opportunity` is Done-only. Archived records refuse active statuses. Dashboard counts by status include archived rows (ADR-014 Amendment 1). §8 narrowed: errors may name paths under the job search and archive roots. Scenarios 31–40 added.
 
 ---
 
@@ -173,12 +174,12 @@ Each tool maps to one or more existing `database.py` functions. Tools are groupe
 
 | Tool Name | Description | Wraps | Parameters |
 |---|---|---|---|
-| `pipi_update_status` | Change opportunity status | `update_opportunity()` | `folder_name` (required), `status` (required, validated against STATUS_VALUES) |
+| `pipi_update_status` | Change opportunity status | `update_opportunity()` | `folder_name` (required), `status` (required, validated against STATUS_VALUES). A change to a Done status archives (§7.5). |
 | `pipi_update_followup` | Set or extend follow-up date | `update_opportunity()` | `folder_name` (required), `follow_up_date` (required, ISO 8601) |
 | `pipi_log_communication` | Record employer communication | `update_opportunity()` | `folder_name` (required), `last_communication_date` (required), `last_communication_type` (required, validated against LAST_COMM_TYPES), `communication_notes` (optional) |
 | `pipi_update_contact` | Set or update recruiter/hiring manager contact info | `update_opportunity()` | `folder_name` (required), `contact_name` (optional), `contact_email` (optional) |
-| `pipi_close_opportunity` | Set terminal status with optional communication notes | `update_opportunity()` | `folder_name` (required), `status` (required, must be in TERMINAL_STATUSES including "Ghosted"), `communication_notes` (optional). When `status="Ghosted"`, appends `NOT POSTED: YYYY-MM-DD` to `posting_status_log`. |
-| `pipi_archive_opportunity` | Soft delete an opportunity | `archive_opportunity()` | `folder_name` (required) |
+| `pipi_close_opportunity` | Set terminal status with optional communication notes | `update_opportunity()` | `folder_name` (required), `status` (required, must be in TERMINAL_STATUSES including "Ghosted"), `communication_notes` (optional). When `status="Ghosted"`, appends `NOT POSTED: YYYY-MM-DD` to `posting_status_log`. Archives (§7.5). |
+| `pipi_archive_opportunity` | Move a Done opportunity's folder to the archive root; refused unless the status is already Done (§7.5) | `archive_opportunity()` | `folder_name` (required) |
 | `pipi_mark_applied` | Set status to Applied with date and schedule Monday follow-up | `update_opportunity()` | `folder_name` (required), `date_applied` (required, ISO 8601), `job_url` (optional). Follow-up date auto-generated as `next_monday(date_applied + follow_up_offset_days)`. Offset read from config (default 14). |
 | `pipi_log_still_posted` | Append today's date to `posting_status_log` STILL POSTED line and set follow-up to next Monday | `update_opportunity()` | `folder_name` (required) |
 | `pipi_add_interview` | Create an interview record linked to an opportunity | Parameterized INSERT into interviews table | `folder_name` (required), `interview_type` (required), `scheduled_date` (required), `interviewer_name` (optional), `interviewer_title` (optional), `notes` (optional) |
@@ -275,6 +276,29 @@ PRD v1.3 §7.3 documented a known inconsistency between the Data Dictionary (14 
 - `pipelinepilot.config` value updated to 14
 - Data Dictionary v1.1 reflects the corrected behavior
 
+### 7.5 Archive on Done (ADR-014)
+
+Every status write goes through `database.update_opportunity()`, so the MCP tools archive exactly as the desktop app does, with one difference: MCP status writes run without the desktop Save confirmation.
+
+**The move.** When `status` changes to a Done status (Passed, Rejected, Ghosted, Closed) on a record with `archived = 0`, the opportunity folder is renamed from the job search root to the archive root (`archive_root` in config, default `001_ArchiveJobSearch` beside the job search root), then `status` and `archived = 1` are written in one transaction. The whole operation holds the PipelinePilot lock.
+
+**Outcomes a caller can see:**
+
+| Outcome | Folder | Record | What the caller gets |
+|---|---|---|---|
+| Success | In the archive root | Done status, `archived = 1` | The updated record |
+| Move refused or failed: missing source, existing destination, longest resulting path of 260 characters or more (259 is the longest allowed; the full path string, drive letter included), a file held open, or the lock held by another PipelinePilot operation | Unchanged | Unchanged | A plain error naming the cause and the paths involved; safe to retry once the cause is fixed |
+| Database write failed after the move; folder moved back | Back in the job search root | Unchanged | The database error; safe to retry |
+| Database write failed after the move; folder could not be moved back | Left in the archive root | Unchanged (still active, `archived = 0`) | An error naming both paths. Do not retry: resolve it in the desktop app, whose startup consistency check lists the record with the Archive opp as and Restore folder to job search repairs |
+
+**Archived records.** A Done request for an archived record changes the status only and moves nothing. A request for an active status is refused: Done is final, and a role that comes back is a new opportunity. Writes to other fields (communication, contact, follow-up) are allowed and move nothing. `pipi_archive_opportunity` exists for a Done record whose folder was not moved; it refuses any other status.
+
+**Reading history.** Archived records stay in the database (ADR-014 Amendment 1):
+
+- `pipi_query_pipeline` excludes archived records unless `include_archived` is true. A Done `status_filter` alone excludes archived Done records and may return Done records with `archived = 0` (see ADR-014 Amendment 1 §4). Use `include_archived=true` to include all Done history: `pipi_query_pipeline(status_filter=["Passed", "Rejected", "Ghosted", "Closed"], include_archived=true)`.
+- `pipi_get_dashboard`: `by_status` counts every row, archived or not; `total`, `analyzed`, `avg_fit`, `above_threshold` and `follow_ups_due` count active rows only. `by_status` therefore need not sum to `total`.
+
+
 ## 8. Validation Rules
 
 All validation follows existing `database.py` and `models.py` rules:
@@ -287,10 +311,11 @@ All validation follows existing `database.py` and `models.py` rules:
 - `folder_name` must reference an existing opportunity (validated before write)
 - `date_applied` cannot precede `date_discovered`
 - `follow_up_date` cannot precede `date_applied` (if both set)
-- Terminal statuses (Passed, Offer, Closed, Ghosted, Rejected) are validated via `TERMINAL_STATUSES`
+- Terminal (Done) statuses (Passed, Rejected, Ghosted, Closed) are validated via `TERMINAL_STATUSES`; Offer is not terminal (ADR-014)
+- An archived record refuses any status outside the Done statuses
 - `posting_status_log` dates must be ISO 8601 (YYYY-MM-DD), enforced by tool code
 
-The MCP server validates inputs before calling `database.py`. Invalid inputs return a clear error message naming the invalid field and the allowed values. Error messages must never include configuration values, file paths outside the repository, or credentials.
+The MCP server validates inputs before calling `database.py`. Invalid inputs return a clear error message naming the invalid field and the allowed values. Error messages must never include configuration values or credentials. They must not include file paths outside the repository, except paths under the job search root and the archive root, which archive refusals and failures name so the user can find and fix the folder (ADR-014 Amendment 1).
 
 ## 9. Logging and Governance
 
@@ -342,8 +367,10 @@ Log format — the SQLite trace callback delivers the statement with bound param
 | Invalid communication type | Return error listing valid LAST_COMM_TYPES |
 | Invalid date format | Return error: "Date must be YYYY-MM-DD format" |
 | SQLite locked (desktop app has it open) | Retry once after 1 second, then return error suggesting closing the desktop app |
-| Config file missing | Return error with expected config path |
+| Config file missing | Return error naming the expected file (`pipelinepilot.config` beside `config.py`), not its full path; full paths appear in errors only where §8 allows |
 | Trace callback installation failure | Raise server-visible error; do not proceed unlogged |
+| Archive refused or failed (§7.5) | Return the plain error from `database.py`, which names the cause and the opportunity's paths; nothing changes unless the error says the folder could not be moved back |
+| Active status requested for an archived record | Return error: Done is final |
 
 ## 11. Definition of Done
 
@@ -365,6 +392,8 @@ Log format — the SQLite trace callback delivers the statement with bound param
 - [x] Follow-up dates snap to next Monday via `next_monday()` utility
 - [x] `follow_up_offset_days` read from config (default 14)
 - [x] Multi-select `status_filter` accepted in `pipi_query_pipeline`
+- [x] A Done status set through `pipi_update_status` or `pipi_close_opportunity` archives through the same database function as the desktop app (ADR-014)
+- [x] `pipi_archive_opportunity` refuses a record that is not in a Done status
 
 ## 12. Test Scenarios
 
@@ -404,11 +433,28 @@ All scenarios execute against a disposable copy of the database (`pipelinepilot_
 | 23 | `pipi_close_opportunity(status="Ghosted")` | Status set to "Ghosted". `NOT POSTED: YYYY-MM-DD` appended to `posting_status_log`. `action_items` unchanged. |
 | 24 | `pipi_close_opportunity` with former `ghosted=true` parameter | Tool rejects `ghosted=true` as unknown parameter. |
 | 25 | `pipi_close_opportunity(status="Closed")` | Status set to "Closed". `posting_status_log` unchanged. |
-| 26 | `pipi_query_pipeline(status_filter=["Applied", "In Review"])` | Returns only Applied and In Review opportunities. |
+| 26 | `pipi_query_pipeline(status_filter=["Applied", "In Review"])` | Returns only Applied and In Review opportunities. (In Review retired in v1.5; superseded by scenario 39.) |
 | 27 | `pipi_query_pipeline(status_filter="Applied")` | Backward compatible — returns only Applied. |
 | 28 | `pipi_query_pipeline(status_filter=["Applied", "InvalidStatus"])` | Returns validation error listing valid statuses. |
 | 29 | `pipi_mark_applied` on a Wednesday | `follow_up_date` is a Monday (next Monday after date_applied + 14 days). |
 | 30 | `pipi_log_still_posted` run on a Thursday | `follow_up_date` is the following Monday, not today + 7. |
+
+### v1.5 Scenarios (31–40)
+
+Scenarios 31–38 and 40 are exercised at the database layer by `test_archive.py`, against a scratch job search root, a scratch archive root and a database copy; the MCP tools are thin wrappers over the same functions. Scenario 39 is enforced by the `STATUS_VALUES` check in `tools.update_status` and has no automated test yet.
+
+| # | Scenario | Expected Result |
+|---|---|---|
+| 31 | `pipi_update_status` to "Passed" on an active record | Folder moves to the archive root; `status` = Passed, `archived` = 1. |
+| 32 | `pipi_close_opportunity(status="Closed")` with a file in the folder held open | Error returned; folder, `status` and `archived` unchanged. |
+| 33 | `pipi_update_status` to "Rejected" on an archived Passed record | Status changes; nothing moves. |
+| 34 | `pipi_update_status` to "Applied" on an archived record | Refused ("Done is final"); record unchanged. |
+| 35 | `pipi_archive_opportunity` on an Applied record | Refused; asks for a Done status. |
+| 36 | Any Done change while another PipelinePilot operation holds the lock | Refused with a retry message; nothing changes. |
+| 37 | Done change whose longest resulting path (full path string, drive letter included) is 260 characters or more | Refused, naming the path; nothing moves. |
+| 38 | `pipi_get_dashboard` after archiving | `by_status` includes archived Done rows. |
+| 39 | `pipi_update_status` to "In Review" | Validation error listing the ten statuses. |
+| 40 | Database write fails after the move and the folder cannot be moved back | Error names both paths; record unchanged; the consistency check lists it. |
 
 ## 13. Future Considerations
 

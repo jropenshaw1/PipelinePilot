@@ -8,7 +8,7 @@
 **Change Log:**
 - **v1.0** (March 7, 2026) — Initial release
 - **v1.1** (August 7, 2026) — Added `posting_status_log` field (ADR-009). Restored `action_items` to task-only scope (ADR-009). Added "Ghosted" to status lifecycle (ADR-009). Corrected follow-up offset to 14 days with Monday-snap behavior (ADR-010). Added multi-select status filtering (ADR-011). Pursuit tracker columns (`cl_reviewed`, `resume_reviewed`, `jfa_completed`) documented (previously added via migration 006 without Data Dictionary update).
-- **v1.2** (October 28, 2026) — Status model v2 (ADR-014): ten statuses in three groups, Ready added, New / Capturing / In Review retired, Offer no longer terminal, default status Analyzing. Archive on Done: `archived` set with the folder move to the archive root; optional `archive_root` config key; folder-name suffix on reuse.
+- **v1.2** (October 28, 2026) — Status model v2 (ADR-014): ten statuses in three groups, Ready added, New / Capturing / In Review retired, Offer no longer terminal, default status Analyzing. Archive on Done: `archived` set with the folder move to the archive root; optional `archive_root` config key; folder-name suffix on reuse. §5.6 renamed Application Checklist Fields to match the Application Queue.
 
 ---
 
@@ -151,7 +151,9 @@ top_gaps:                 # List of 2–5 strings
 | `interview_date` | DATE | NULL | — | Scheduled interview date and time |
 | `interview_notes` | TEXT | NULL | — | Pre- and post-interview notes |
 
-### 5.6 Pursuit Tracker Fields
+### 5.6 Application Checklist Fields
+
+Shown in the Application Queue (Analyzing and Ready) and in the Application Checklist section of the detail view (ADR-014). Formerly the Pursuit Tracker fields.
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
@@ -165,7 +167,7 @@ top_gaps:                 # List of 2–5 strings
 |---|---|---|---|---|
 | `date_created` | DATE | NOT NULL | Current date | Auto-set on record creation. Never modified. |
 | `date_modified` | DATE | NOT NULL | Current date | Auto-updated on any field change |
-| `archived` | INTEGER | NOT NULL | 0 | Boolean (0/1). Set to 1 when the opportunity enters a Done status and its folder moves to the archive root (ADR-014). Archived records remain queryable and are excluded from active views. |
+| `archived` | INTEGER | NOT NULL | 0 | Boolean (0/1). Set to 1 when the opportunity enters a Done status and its folder moves to the archive root (ADR-014). Archived records remain queryable and are excluded from active views. Done is final: an archived record refuses an active status. Active views exclude archived rows; history views (the Done and All filters, the dashboard's counts by status) include them (ADR-014 Amendment 1). |
 
 ---
 

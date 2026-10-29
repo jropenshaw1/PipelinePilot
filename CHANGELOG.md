@@ -11,13 +11,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Status model v2** (ADR-014) -- ten statuses in three groups by whose move it is: My move (Analyzing, Ready, Offer), Their move (Applied, Pursuing, Interviewing), Done (Passed, Rejected, Ghosted, Closed). New `Ready` status. `STATUS_GROUPS`, `DONE_STATUSES`, `RETIRED_STATUS_MAP` and `STATUS_FILTER_OPTIONS` in `models.py`. At startup, rows still holding a retired status are mapped (New and Capturing to Analyzing, In Review to Applied) and each change is logged.
+- **Archive on Done** (ADR-014) -- a change to a Done status, through any write path, renames the opportunity folder to the archive root (`001_ArchiveJobSearch` beside the job search root, or config `archive_root`) and sets `archived = 1` in the same operation, inside `database.update_opportunity()`. A failed move changes nothing. A failed database write moves the folder back; if that also fails, the error names both paths and the consistency check lists the record. Guarded by a lock file at `%LOCALAPPDATA%\PipelinePilot\pipi_fs.lock` (stale after 10 minutes when its process is gone) and a check that refuses any resulting path of 260 characters or more.
+- **Save confirmation on Done** -- the desktop detail view asks before saving a change to a Done status. No saves nothing and keeps the window open.
+- **Consistency check** (ADR-014) -- at desktop startup and before every rebuild, lists records whose folder location disagrees with `archived`, with one-at-a-time repairs (Archive opp as, Restore folder to job search, Return folder to archive, Reactivate opp as, Decide later), plus a report-only list of `Company_Role` folders with no record.
+- **Folder-name reuse** -- a name already used by a record or a folder in either root, compared case-insensitively, gets a `_YYYY-MM` suffix (then `-2`, `-3`) in capture and promote, within the 60-character limit.
+- **`migrations/archive_done_folders.py`** -- one-time archive of existing Done folders: dry run by default; `--apply` gated on a backup reporting PASS and VALID FOR CUTOVER; `--resume` and `--undo` from a per-item manifest. Tests in `test_migration.py`.
+- **Backup and restore of the archive root** -- `tools/pp_backup_restore.py` v1.5 adds the archive root as category `archive`.
+- **Tests** -- `test_status_model.py`, `test_archive.py`, `test_migration.py`; `conftest.py` isolates the lock directory and config in tests.
+
 - **`test_job_url.py`** -- 5 end-to-end tests for ADR-012: fresh-install migration order (010 survives 008's table rebuild), OB thought → import → promote → `opportunities.job_url` and the JD `Job URL:` line, pre-ADR entries without a URL, and a test proving the backup includes WAL-resident rows.
 - **Agent-vault credential bridge** (ADR-013) -- `vault.py` retrieves OpenBrain and Anthropic credentials from Dashlane CLI item IDs on each operation, opens a visible authentication window when needed, scrubs inherited credential variables, and writes value-free audit events to per-process log files.
 - **Agent-vault Settings controls** -- non-secret account, item-ID, and optional `dcli` path fields plus title-only vault-access tests for both credential items.
 - **ADR-013 regression tests** -- state-table, GUID validation, log-safety, retry/window-guard, integration, HTTP-failure, and legacy-reader coverage.
 - **GitHub Actions CI** (`.github/workflows/tests.yml`) -- runs the test suite on every push and pull request (Python 3.12).
 - **`database.backup_database()`** -- consistent database copy via SQLite's online backup API.
-- **PipelinePilot MCP server** (`mcp_server/`) -- local stdio MCP server exposing the SQLite pipeline to Claude Desktop as a thin wrapper over `database.py`, `config.py`, and `ob_bridge.py`. Read tools: `pipi_query_pipeline`, `pipi_get_opportunity`, `pipi_get_dashboard`, `pipi_get_followups_due`, `pipi_search_opportunities`. Write tools: `pipi_update_status`, `pipi_update_followup`, `pipi_log_communication`, `pipi_update_contact`, `pipi_close_opportunity`, `pipi_archive_opportunity`, `pipi_mark_applied`, `pipi_log_still_posted`, `pipi_add_interview`. Import: `pipi_run_ob_import`. SQL statements are traced to stderr (stdout is reserved for JSON-RPC). `PIPI_MCP_DB_PATH` points the server at a disposable test database. Spec: `docs/08_MCP_Server_PRD_v1.4.md`. Setup: `mcp_server/README.md`.
+- **PipelinePilot MCP server** (`mcp_server/`) -- local stdio MCP server exposing the SQLite pipeline to Claude Desktop as a thin wrapper over `database.py`, `config.py`, and `ob_bridge.py`. Read tools: `pipi_query_pipeline`, `pipi_get_opportunity`, `pipi_get_dashboard`, `pipi_get_followups_due`, `pipi_search_opportunities`. Write tools: `pipi_update_status`, `pipi_update_followup`, `pipi_log_communication`, `pipi_update_contact`, `pipi_close_opportunity`, `pipi_archive_opportunity`, `pipi_mark_applied`, `pipi_log_still_posted`, `pipi_add_interview`. Import: `pipi_run_ob_import`. SQL statements are traced to stderr (stdout is reserved for JSON-RPC). `PIPI_MCP_DB_PATH` points the server at a disposable test database. Spec: `docs/08_MCP_Server_PRD_v1.5.md`. Setup: `mcp_server/README.md`.
 - **`posting_status_log` field** (ADR-009) -- machine-maintained posting lifecycle record on `opportunities`: `STILL POSTED: YYYY-MM-DD | YYYY-MM-DD | ...` plus `NOT POSTED: YYYY-MM-DD` on ghosted closure. Written only by `pipi_log_still_posted` and `pipi_close_opportunity`.
 - **Ghosted status** (ADR-009) -- first-class terminal status in `STATUS_VALUES` and `TERMINAL_STATUSES`. Excluded from follow-ups due, like the other terminal statuses.
 - **Multi-select status filter** (ADR-011) -- `get_all_opportunities()` and `pipi_query_pipeline` accept a single status or a list. Desktop multi-select widget not yet built.
@@ -32,6 +41,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **"Not QFL" line on the import summary** -- thoughts that mention the `[quick-fit-log]` tags in prose but contain no block (for example, Context Rescue handoffs) are listed separately with created date and first line, and are no longer counted as parse failures.
 
 ### Changed
+
+- **Opportunities status filter** (ADR-014) -- offers the three groups plus individual statuses and opens on Active (My move and Their move). Done and All include archived records.
+- **Pursuit Tracker renamed Application Queue** (ADR-014) -- lists Ready, then Analyzing; Pursuing removed. The detail section is renamed Application Checklist.
+- **Default status for new records** is Analyzing in all four insert paths (was New or Capturing).
+- **`TERMINAL_STATUSES`** no longer includes Offer; **`POST_APPLICATION_STATUSES`** no longer includes In Review.
+- **Archived records refuse active statuses** ("Done is final"). A role that comes back is a new opportunity.
+- **`pipi_archive_opportunity` and `database.archive_opportunity()`** now archive only a record already in a Done status, and refuse any other status.
+- **Dashboard counts by status** include archived rows so Done history stays visible; the total, average fit and follow-ups due still count active rows only (ADR-014 Amendment 1).
+- **`rebuild_index()`** skips, with a warning, any folder whose name matches an archived record, and adds the consistency-check findings to its report.
+- **`promote_quick_fit()`** signature is now `promote_quick_fit(db_path, qfl_id)`.
+- **MCP tool descriptions** list the ten statuses and the archive behavior. MCP errors may name paths under the job search and archive roots, never configuration values or credentials. Spec: `docs/08_MCP_Server_PRD_v1.5.md`.
 
 - **Follow-up dates** (ADR-010) -- every follow-up date is a Monday. Initial follow-up = `next_monday(date_applied + offset)`. Still-posted recheck = `next_monday(today)`, replacing the hardcoded 7 days in `log_still_posted()`.
 - **Default follow-up offset** changed from 30 to 14 days (`DEFAULT_FOLLOW_UP_OFFSET_DAYS`, ADR-010). Reverses the 0.4.0 change.
@@ -55,6 +75,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Settings terminology** -- OpenBrain credential labels are provider-neutral and no longer expose the previous key type.
 
 ### Removed
+
+- **Retired statuses** New, Capturing and In Review (ADR-014).
+- **Desktop Archive button** -- archiving follows a Done status.
+- **Row deletion in `promote_quick_fit()`** -- it deleted an opportunity row whose folder was missing from the job search root, which would have deleted archived history. The name-reuse suffix replaces it.
 
 - **Plaintext credential readers** (ADR-013) -- removed all runtime reads of `ob_supabase_key`, `OB_SUPABASE_KEY_KEY`, `anthropic_api_key`, and the `ClaudeAPIkey` file fallback.
 - **`migrations/backfill_job_url_from_ob.py`** -- retired after the one-time ADR-012 backfill was applied and verified; recover it from Git history if ever needed.
