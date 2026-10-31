@@ -468,6 +468,213 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
     return out
 
 
+# ─────────────────────────────────────────────
+# Resume tailoring (ADR-015): sources
+# parse_master_resume() reads the master .docx into an inventory with
+# snapshot-scoped IDs. load_resume_pool() reads approved pool items and the
+# role map. Every structural surprise raises TailoringLoadError, which the
+# orchestrator turns into a master-copy run (fail closed, ADR-015 §1).
+# ─────────────────────────────────────────────
+
+POOL_PLACEHOLDER = "(not yet captured)"
+ROLE_MAP_FILENAME = "role_map.yaml"
+_YEAR = re.compile(r"\b(19|20)\d{2}\b")
+_POOL_ITEM = re.compile(r"^### +(\S+)\s*$", re.M)
+_POOL_FIELD = re.compile(r"^- \*\*([a-z_]+):\*\* ?(.*)$", re.M)
+
+
+class TailoringLoadError(Exception):
+    """A tailoring source could not be loaded safely; tailoring is disabled for the run."""
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _is_bullet(para) -> bool:
+    ppr = para._p.pPr
+    has_num = ppr is not None and ppr.numPr is not None
+    return has_num or "list" in (para.style.name or "").lower()
+
+
+def _is_heading(text: str) -> bool:
+    label = text.split("(")[0].strip()
+    return bool(label) and label.isupper() and any(c.isalpha() for c in label)
+
+
+def _editable(para, where: str) -> str:
+    """Return the text of an editable paragraph; one run is required (ADR-015 §1)."""
+    if len(para.runs) != 1:
+        raise TailoringLoadError(f"{where} has {len(para.runs)} text runs; one is required")
+    return para.runs[0].text
+
+
+def parse_master_resume(docx_path) -> dict:
+    """Inventory of the master resume. Paragraph indexes are kept so the
+    renderer edits the same paragraphs. Locked sections are not inventoried."""
+    import hashlib
+    path = Path(docx_path)
+    doc = Document(str(path))
+    if doc.tables:
+        raise TailoringLoadError("master resume contains tables")
+    paras = doc.paragraphs
+    filled = [(i, p) for i, p in enumerate(paras) if p.text.strip()]
+    if len(filled) < 4:
+        raise TailoringLoadError("master resume is missing the header lines")
+
+    inv = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+        "headline": None, "subtitle": None, "summary_paragraph": None,
+        "summary_bullets": [], "competencies": [], "roles": [],
+    }
+    # Lines 0 and 1 (name, contact) are locked; 2 and 3 are headline and subtitle.
+    for key, (i, p) in zip(("headline", "subtitle"), filled[2:4]):
+        if _is_heading(p.text.strip()):
+            raise TailoringLoadError(f"master resume has no {key} line")
+        inv[key] = {"index": i, "text": _editable(p, key)}
+
+    section = None
+    role = None
+    pending_title = None
+    for i, p in filled[4:]:
+        text = p.text.strip()
+        if not _is_bullet(p) and _is_heading(text):
+            section = text.split("(")[0].strip()
+            role = pending_title = None
+            continue
+        if section == "PROFILE SUMMARY":
+            if _is_bullet(p):
+                n = len(inv["summary_bullets"])
+                inv["summary_bullets"].append(
+                    {"id": f"M:S:{n}", "index": i, "text": _editable(p, f"summary bullet {n}")})
+            elif inv["summary_paragraph"] is None:
+                inv["summary_paragraph"] = {"index": i, "text": _editable(p, "summary paragraph")}
+            else:
+                raise TailoringLoadError("profile summary has more than one paragraph")
+        elif section == "CORE COMPETENCIES":
+            if _is_bullet(p):
+                raise TailoringLoadError("core competencies contain a bulleted paragraph")
+            line = _editable(p, "competency line")
+            label, sep, rest = line.partition(":")
+            if not sep:
+                raise TailoringLoadError(f"competency line has no label: {line[:40]}")
+            inv["competencies"].append({
+                "index": i, "label": label.strip(),
+                "terms": [t.strip() for t in rest.split("|") if t.strip()],
+            })
+        elif section == "PROFESSIONAL EXPERIENCE":
+            if _is_bullet(p):
+                if role is None:
+                    raise TailoringLoadError("experience bullet before any role")
+                n = len(role["bullets"])
+                role["bullets"].append({
+                    "id": f"M:{role['role_index']}:{n}", "index": i,
+                    "text": _editable(p, f"bullet {n} of {role['title']}")})
+            elif pending_title is None:
+                pending_title = (i, text)
+                role = None
+            else:
+                if not _YEAR.search(text):
+                    raise TailoringLoadError(f"role line has no dates: {text[:40]}")
+                role = {"role_index": len(inv["roles"]), "title": pending_title[1],
+                        "title_index": pending_title[0], "company_line": text,
+                        "company_index": i, "bullets": []}
+                inv["roles"].append(role)
+                pending_title = None
+        # Every other section (portfolio, volunteer, education, certifications) is locked.
+
+    if inv["summary_paragraph"] is None or not inv["summary_bullets"]:
+        raise TailoringLoadError("profile summary not found")
+    if not inv["competencies"]:
+        raise TailoringLoadError("core competencies not found")
+    if not inv["roles"] or pending_title is not None:
+        raise TailoringLoadError("professional experience roles not found or incomplete")
+    seen = set()
+    for r in inv["roles"]:
+        ident = (_norm(r["title"]), _norm(r["company_line"]))
+        if ident in seen:
+            raise TailoringLoadError(f"repeated role identity: {r['title']}")
+        seen.add(ident)
+        if not r["bullets"]:
+            raise TailoringLoadError(f"role has no bullets: {r['title']}")
+    return inv
+
+
+def _pool_items_in_file(path: Path) -> list[dict]:
+    text = path.read_text(encoding="utf-8")
+    start = text.find("## Pool Items")
+    if start < 0:
+        return []
+    body = text[start:]
+    heads = list(_POOL_ITEM.finditer(body))
+    items = []
+    for n, h in enumerate(heads):
+        end = heads[n + 1].start() if n + 1 < len(heads) else len(body)
+        fields = {k: v.strip() for k, v in _POOL_FIELD.findall(body[h.end():end])}
+        polished = fields.get("polished_resume_item", "")
+        if not polished or polished.startswith("("):
+            continue  # not approved for resume use (empty or a placeholder)
+        items.append({"item_id": h.group(1), "role_period": fields.get("role_period", ""),
+                      "text": polished, "file": path.name})
+    return items
+
+
+def load_resume_pool(pool_dir, inventory: dict) -> dict:
+    """Approved pool items bound to master roles. Returns
+    {"items": [...], "role_map": {period: role_index},
+     "summary_excluded_roles": set of role_index}. Each item carries
+    role_index (None means summary-only). A role map entry with
+    in_summary: false keeps every source of that role out of summary
+    bullets (ADR-015 Amendment 1)."""
+    pool = Path(pool_dir)
+    if not pool.is_dir():
+        raise TailoringLoadError(f"resume pool folder not found: {pool}")
+    map_path = pool / ROLE_MAP_FILENAME
+    if not map_path.exists():
+        raise TailoringLoadError(f"{ROLE_MAP_FILENAME} not found in the resume pool folder")
+    try:
+        raw_map = yaml.safe_load(map_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        raise TailoringLoadError(f"{ROLE_MAP_FILENAME} is not valid YAML: {e}")
+    if not isinstance(raw_map, dict):
+        raise TailoringLoadError(f"{ROLE_MAP_FILENAME} must map role periods to roles")
+
+    role_map, in_summary = {}, {}
+    for period, entry in raw_map.items():
+        if not isinstance(entry, dict) or not entry.get("title") or not entry.get("company_line"):
+            raise TailoringLoadError(f"role map entry '{period}' needs title and company_line")
+        want = (_norm(entry["title"]), _norm(entry["company_line"]))
+        hits = [r["role_index"] for r in inventory["roles"]
+                if (_norm(r["title"]), _norm(r["company_line"])) == want]
+        if len(hits) != 1:
+            raise TailoringLoadError(
+                f"role map entry '{period}' matches {len(hits)} master roles; exactly one is required")
+        flag = entry.get("in_summary", True)
+        if not isinstance(flag, bool):
+            raise TailoringLoadError(f"role map entry '{period}': in_summary must be true or false")
+        if hits[0] in in_summary and in_summary[hits[0]] != flag:
+            raise TailoringLoadError(
+                f"role map entries for '{inventory['roles'][hits[0]]['title']}' disagree on in_summary")
+        in_summary[hits[0]] = flag
+        role_map[str(period)] = hits[0]
+
+    items, seen = [], {}
+    for path in sorted(pool.glob("*.md")):
+        if path.name.upper() == "SCHEMA.MD":
+            continue
+        for it in _pool_items_in_file(path):
+            if it["item_id"] in seen:
+                raise TailoringLoadError(
+                    f"duplicate pool item_id '{it['item_id']}' in {seen[it['item_id']]} and {path.name}")
+            seen[it["item_id"]] = path.name
+            it["role_index"] = role_map.get(it["role_period"])
+            items.append(it)
+    excluded = {idx for idx, flag in in_summary.items() if not flag}
+    return {"items": items, "role_map": role_map, "summary_excluded_roles": excluded}
+
+
 def generate_tailored_resume(result: dict, company: str, role: str,
                               folder_path: Path, resume_path: str) -> Path:
     """
