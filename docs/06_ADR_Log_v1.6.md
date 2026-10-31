@@ -1,6 +1,6 @@
 # PipelinePilot — Architecture Decision Records (ADRs)
 
-**Version:** 1.5
+**Version:** 1.6
 **Date:** October 30, 2026
 **Author:** Jonathan Openshaw
 **Standard:** Michael Nygard ADR Format
@@ -13,6 +13,7 @@
 - **v1.3** (October 12, 2026) — ADR-013 (Credentials by Vault Reference — No Secrets in pipelinepilot.config)
 - **v1.4** (October 28, 2026) — ADR-014 (Status Model v2 and Archive on Done); implementation notes added to ADR-014 after implementation
 - **v1.5** (October 30, 2026) — ADR-015 (Traceable Resume Tailoring), with Amendment 1 (Role Prominence)
+- **v1.6** (October 30, 2026) — ADR-016 (JFA Model as a Setting)
 
 ---
 
@@ -869,3 +870,53 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 - Tailoring prompt: lists each role's bullet cap and which roles may not be cited in the summary.
 - Trace: records A1 drops and A2 rejections with their reasons.
 - Tests: a role over its cap drops its lowest-priority bullets and reports `partial`; a pool item replacing a master bullet within the cap passes; a summary bullet citing an excluded role's master bullet, and one citing its pool item, are dropped; summary floor after A2 drops; master summary bullets and summary-only items are unaffected by A2; `in_summary` non-boolean and disagreeing entries reject at load. A3: a minimized role whose swaps exceed its master character total is brought back under it (swap reverted, then master bullets); a minimized role within its total passes; an unflagged role is not subject to A3.
+
+---
+
+## ADR-016: JFA Model as a Setting
+
+**Date:** October 30, 2026
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Mini APPROVE and Gee APPROVE_WITH_CHANGES; confirmation of revision 2, Gee CONFIRM and Mini CONFIRM. Implementation pending.
+**Amends:** none. Applies to the analysis call and to the ADR-015 tailoring call.
+
+### Context
+
+1. **The model is hard-coded.** `fit_analysis_engine.py` sets `MODEL = "claude-opus-4-7"`. The pin was never reviewed after it was set; it surfaced only during the ADR-015 survey on 2026-10-30. Changing it requires a code edit and a commit, so it stays stale by default.
+2. **The owner wants the current model.** The owner prefers Opus 5.5's reasoning and output quality over Opus 4.7, which needed frequent realignment in his use.
+3. **The fit score is a guideline, not a calibrated measure.** The owner uses the score as one signal before deciding to run a full JFA and does not compare scores across runs closely. Score drift between models is accepted and needs no recalibration step.
+4. **Model behavior still matters.** Different models write cover letters, interview guides and (after ADR-015) tailored resumes differently. A model change should be a deliberate, visible event, not something that happens underneath the owner.
+5. **The model is already recorded per run.** `fit_analysis.md` writes `model:` in its YAML and its header line.
+6. **Opus 5.5 changes the response shape.** Per Anthropic's Opus 5.5 migration guide, thinking runs on every request, a response can begin with one or more thinking blocks before the first text block, and `max_tokens` is a hard limit on thinking plus text. The engine reads `message.content[0].text` and sets `max_tokens = 8000`, so switching the model alone could fail to find the JSON or truncate it. The guide also rejects sampling parameters, manual thinking budgets and a prefilled final assistant turn; the current call uses none of these.
+
+### Decision
+
+1. **Config key `jfa_model`** (string) in `pipelinepilot.config`. `config.DEFAULTS` gains `"jfa_model": DEFAULT_JFA_MODEL`, with `DEFAULT_JFA_MODEL = "claude-opus-5-5"` in `models.py` beside the other defaults. An exact model ID is pinned; no floating alias.
+2. **One resolution point.** `run_fit_analysis()` gains a `model` argument. The desktop app passes `cfg["jfa_model"]`; an empty or whitespace value resolves to `DEFAULT_JFA_MODEL`. The resolved ID is used by the analysis call, the ADR-015 tailoring call, and the `model` fields in `fit_analysis.md`. The module constant `MODEL` is removed so no call path can use a different value.
+3. **Settings row.** A "JFA Model" text field in Settings beside "Personal Context Skill", with a one-line note that it takes an exact Anthropic model ID. Free text, not a dropdown: a hard-coded list of models would go stale the same way the constant did. The value is trimmed on save; no other validation, because the API is the authority on which IDs exist.
+4. **Model unavailable: one condition, two stages.**
+   - *Condition.* The model-setting message is shown only for `anthropic.NotFoundError` (HTTP 404), the API's error for a model ID that does not exist or that the key cannot access. Any other error, including a 400 that mentions the model because a request parameter is unsupported for it, keeps its existing handling and is reported as a request error with the API's own message. No error text is pattern-matched for the model ID.
+   - *Analysis call.* The run stops before any artifact is generated: "Model '<id>' is not available. Update Settings → JFA Model, then run the analysis again." Existing files in the folder are untouched.
+   - *Tailoring call (ADR-015).* The analysis artifacts are already written. Tailoring fails over to `master-copy` under the ADR-015 §5 and §5.1 publication contract (including retention of the previous resume/trace pair if publication itself fails), and the progress message adds the same model-setting guidance.
+   - No silent fallback to another model in either stage.
+5. **Response handling for both calls.** Text is taken by block type, never by position: the concatenation of every content block with `type == "text"`; thinking and any other block types are ignored. A response whose `stop_reason` is `max_tokens` is reported as "The model ran out of output tokens before finishing" rather than as invalid JSON, and the run treats it as an API failure of that stage (Decision 4 stages apply). `max_tokens` rises to 32,000 for both calls, as a ceiling on thinking plus the JSON at the default effort; tokens are billed only as used. No `thinking`, `temperature`, `top_p`, `top_k` or effort parameter is sent; the model's defaults apply.
+6. **Monitoring.** The setting is tracked in the owner's agent CMDB (private `ai-team-ops/agent-cmdb.md`) as a configuration dependency: current value, review owner (Jonathan), and notification source (Anthropic's model retirement emails to the account owner and the Model deprecations page). Any change to the setting updates that row in the same sitting. Review triggers: a retirement notice for the pinned model, or a new model release the owner wants to adopt. Review is a decision, not a test suite: change the setting, run one JFA, read the output. No score recalibration (Context 3).
+
+### Alternatives Considered
+
+- **Floating alias (always the newest model).** Rejected: behavior changes silently (Context 4), and a newer model may arrive before the owner wants it.
+- **Keep the constant, update it in code.** Rejected: that is the arrangement that produced an unreviewed pin.
+- **Dropdown of known models.** Rejected: the list itself becomes a stale constant.
+- **Separate settings for the analysis call and the tailoring call.** Rejected for now: one model per run keeps outputs consistent and the setting simple. Revisit only if a concrete need appears.
+- **Automatic fallback to a default model on failure.** Rejected: it would change behavior without the owner deciding to.
+
+### Consequences
+
+- `models.py`: `DEFAULT_JFA_MODEL`.
+- `config.py`: `DEFAULTS["jfa_model"]`. Existing config files without the key get the default through the existing merge in `load_config()`.
+- `fit_analysis_engine.py`: `MODEL` removed; `run_fit_analysis(model=...)`; `_call_api` and the tailoring call take the model explicitly; `write_fit_analysis_md` takes it explicitly; one `_response_text(message)` helper used by both calls (Decision 5); `MAX_TOKENS` 8,000 to 32,000; not-found handling per Decision 4.
+- `pipelinepilot.py`: Settings row, save and load, and passing the value to `run_fit_analysis`.
+- First run after the change uses Opus 5.5. Scores, letters and guides may differ from earlier runs; accepted.
+- Data Dictionary §7 (config keys), README and CHANGELOG updated in the same change set. Agent CMDB row added in the private repo (owner commits).
+- Tests (fake client, no network): empty or whitespace setting resolves to the default; a configured value reaches both calls and both `fit_analysis.md` fields; a response with thinking blocks before the text block parses; several text blocks are joined; `stop_reason` `max_tokens` gives the out-of-tokens message, not a JSON error; `NotFoundError` on the analysis call gives the model-setting message and writes no artifacts; `NotFoundError` on the tailoring call produces a `master-copy` pair with the guidance, and when publication also fails the previous resume/trace pair is retained; a 400 error mentioning the model (unsupported parameter) is reported as a request error without the model-setting message; no remaining reference to a module-level `MODEL`.
+- Sequencing note: Decisions 4 (tailoring stage) and 5 (tailoring call) land with the ADR-015 tailoring call; the rest lands in this ADR's own commit.
+- Sequencing: implemented as its own commit after the ADR-015 defect fixes and before the ADR-015 validation runs, so validation output comes from the model the owner will actually use.
