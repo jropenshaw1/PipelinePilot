@@ -16,6 +16,7 @@ from models import (
     DCLI_PATH_KEY,
     DEFAULT_JFA_MODEL,
     JFA_MODEL_KEY,
+    RESUME_POOL_PATH_KEY,
 )
 
 # Config file lives beside pipelinepilot.py
@@ -29,6 +30,7 @@ DEFAULTS = {
     OB_SUPABASE_URL_KEY: "",
     DCLI_PATH_KEY: "dcli",
     JFA_MODEL_KEY: DEFAULT_JFA_MODEL,
+    RESUME_POOL_PATH_KEY: "",
 }
 
 

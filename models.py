@@ -117,6 +117,9 @@ DCLI_PATH_KEY = "dcli_path"
 JFA_MODEL_KEY = "jfa_model"
 DEFAULT_JFA_MODEL = "claude-opus-5-5"
 
+# Resume tailoring (ADR-015): folder of approved resume pool items and role_map.yaml
+RESUME_POOL_PATH_KEY = "resume_pool_path"
+
 # Archive on Done (ADR-014)
 ARCHIVE_ROOT_KEY = "archive_root"
 DEFAULT_ARCHIVE_DIRNAME = "001_ArchiveJobSearch"

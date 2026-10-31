@@ -1381,6 +1381,23 @@ def recover_resume_publication(folder) -> str | None:
     return "Previous resume restored after an interrupted publication."
 
 
+def folder_resume_problems(folder) -> list[str]:
+    """Every resume/trace problem in one opportunity folder, for the startup
+    check (report only). Pairs are found by file name, so no record lookup."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return []
+    if (folder / PUBLISH_JOURNAL).exists():
+        return ["interrupted resume publication"]
+    problems = []
+    for trace in sorted(folder.glob("ResumeTrace_*.md")):
+        resume_name = "Resume_" + trace.name[len("ResumeTrace_"):-len(".md")] + ".docx"
+        problem = resume_pair_problem(folder, resume_name, trace.name)
+        if problem:
+            problems.append(problem)
+    return problems
+
+
 def resume_pair_problem(folder, resume_name: str, trace_name: str) -> str | None:
     """For the startup check (report only): an in-flight journal or a resume
     and trace whose run_ids do not match. A folder with neither file, or a

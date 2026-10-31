@@ -37,6 +37,7 @@ from models import (
     DCLI_PATH_KEY,
     DEFAULT_JFA_MODEL,
     JFA_MODEL_KEY,
+    RESUME_POOL_PATH_KEY,
 )
 
 # Date fields entered by hand in the detail view (YYYY-MM-DD)
@@ -748,6 +749,33 @@ class PipelinePilotApp(ctk.CTk):
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
             cs_row, text="Browse", command=self._browse_context_skill, width=90, fg_color=C_PANEL,
+        ).pack(side="left")
+
+        # ── Resume Pool Folder (ADR-015) ──
+        self._settings_section(frame, "Resume Pool Folder")
+
+        rpf_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        rpf_frame.pack(fill="x", pady=(0, 20))
+        rpf_inner = ctk.CTkFrame(rpf_frame, fg_color="transparent")
+        rpf_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            rpf_inner,
+            text="Optional — folder of approved resume pool items with its role_map.yaml.\n"
+                 "Resume tailoring may draw on these bullets as well as the master resume.\n"
+                 "Leave blank to tailor from the master resume alone.",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        rpf_row = ctk.CTkFrame(rpf_inner, fg_color="transparent")
+        rpf_row.pack(anchor="w")
+        self._resume_pool_var = ctk.StringVar(value=self.cfg.get(RESUME_POOL_PATH_KEY, ""))
+        ctk.CTkEntry(
+            rpf_row, textvariable=self._resume_pool_var, width=440, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            rpf_row, text="Browse", command=self._browse_resume_pool, width=90, fg_color=C_PANEL,
         ).pack(side="left")
 
         # ── JFA Model (ADR-016) ──
@@ -1748,6 +1776,12 @@ class PipelinePilotApp(ctk.CTk):
         if path:
             self._resume_path_var.set(path)
 
+    def _browse_resume_pool(self):
+        """Browse and set the resume pool folder (ADR-015)."""
+        folder = filedialog.askdirectory(title="Select Resume Pool Folder")
+        if folder:
+            self._resume_pool_var.set(folder)
+
     def _browse_context_skill(self):
         """Browse and set the personal context skill path."""
         path = filedialog.askopenfilename(
@@ -1806,6 +1840,7 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["resume_path"] = self._resume_path_var.get().strip()
         self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
         self.cfg[JFA_MODEL_KEY] = self._jfa_model_var.get().strip()
+        self.cfg[RESUME_POOL_PATH_KEY] = self._resume_pool_var.get().strip()
         self.cfg[OB_SUPABASE_URL_KEY] = self._ob_url_var.get().strip()
         self.cfg[AGENT_VAULT_ACCOUNT_KEY] = self._vault_account_var.get().strip()
         self.cfg[OB_KEY_VAULT_ID_KEY] = self._ob_vault_id_var.get().strip()
@@ -2425,6 +2460,7 @@ class ConsistencyWindow(ctk.CTkToplevel):
         "active_only_archived": "Folder in job search root, record archived",
         "both_or_neither": "Folder in both roots, or in neither (resolve by hand)",
         "folder_no_record": "Folder with no record (report only: add a record or move the folder)",
+        "resume_pair": "Resume and trace need attention (report only: run the analysis again to resolve)",
     }
 
     def __init__(self, parent, db_path, issues: dict):
@@ -2658,6 +2694,7 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             progress_cb=self._handle_progress,
             context_skill_path=self.cfg.get("context_skill_path", ""),
             model=self.cfg.get(JFA_MODEL_KEY, ""),
+            resume_pool_path=self.cfg.get(RESUME_POOL_PATH_KEY, ""),
         )
 
     def _handle_progress(self, step: str, detail: str = "", stage: str = None):

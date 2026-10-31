@@ -440,12 +440,13 @@ def _folder_state(job_root: Path, archive_root: Path, folder_name: str, archived
 
 def check_consistency(db_path: Path) -> dict:
     """Report rows whose folder location disagrees with archived (ADR-014),
-    and Company_Role folders with no record (report only). Repairs nothing."""
+    Company_Role folders with no record (report only), and resume/trace pairs
+    left interrupted or mismatched (ADR-015, report only). Repairs nothing."""
     import re
 
     job_root, archive_root = get_roots(db_path)
     issues = {"archive_only_active": [], "active_only_archived": [], "both_or_neither": [],
-              "folder_no_record": []}
+              "folder_no_record": [], "resume_pair": []}
     with _connect(db_path) as conn:
         rows = conn.execute(
             "SELECT folder_name, status, archived FROM opportunities ORDER BY folder_name"
@@ -457,6 +458,15 @@ def check_consistency(db_path: Path) -> dict:
                 "folder_name": row["folder_name"],
                 "status": row["status"],
                 "archived": row["archived"],
+                "job_path": str(job_root / row["folder_name"]),
+                "archive_path": str(archive_root / row["folder_name"]),
+            })
+    import fit_analysis_engine  # local import: the engine imports this module
+    for row in rows:
+        folder = (archive_root if row["archived"] else job_root) / row["folder_name"]
+        for problem in fit_analysis_engine.folder_resume_problems(folder):
+            issues["resume_pair"].append({
+                "folder_name": row["folder_name"], "status": problem, "archived": row["archived"],
                 "job_path": str(job_root / row["folder_name"]),
                 "archive_path": str(archive_root / row["folder_name"]),
             })
@@ -479,6 +489,7 @@ def consistency_lines(issues: dict) -> list[str]:
         "active_only_archived": "Folder in job search root, record archived",
         "both_or_neither": "Folder in both roots or neither",
         "folder_no_record": "Folder with no record",
+        "resume_pair": "Resume and trace need attention",
     }
     return [
         f"{labels[case]}: {item['folder_name']} ({item['status']})"
