@@ -12,7 +12,7 @@
 - **v1.2** (October 6, 2026) — ADR-012 (Carry job_url Through OB Import and Promote)
 - **v1.3** (October 12, 2026) — ADR-013 (Credentials by Vault Reference — No Secrets in pipelinepilot.config)
 - **v1.4** (October 28, 2026) — ADR-014 (Status Model v2 and Archive on Done); implementation notes added to ADR-014 after implementation
-- **v1.5** (October 30, 2026) — ADR-015 (Traceable Resume Tailoring)
+- **v1.5** (October 30, 2026) — ADR-015 (Traceable Resume Tailoring), with Amendment 1 (Role Prominence)
 
 ---
 
@@ -731,7 +731,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Implementation pending.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1). Implementation pending.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -828,3 +828,44 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 - Cost and latency: one additional API call per run, roughly 20 to 60 seconds and one cached prefix; no retries (a failure falls back per §5).
 - Data Dictionary §7 (config keys) and README updated in the same change set.
 - Tests (synthetic fixtures only): master parse round trip; each §3.1 accept and reject case above; each §3.2 check passing and failing; empty, unknown and duplicate source IDs; duplicate pool item IDs; ambiguous and unmatched role map entries; invalid JSON; all bullets of a role dropped (floor); summary floor; each budget reduction step and the terminal `master-copy`; render failure publishes a `master-copy` pair; failure after the first replacement restores the previous pair (`publication-failed`); interruption between replacements rolls back on the next run; interruption after both replacements rolls forward; a persistently unwritable destination changes no file and reports `publication-failed` with no fallback claimed; journal write failure replaces nothing; restore failure reports `publication-failed: manual recovery needed` and keeps the journal; mismatched `run_id`s are reported as an incomplete pair by the startup check; a first run with no previous pair publishes cleanly; retuned versus verified classification; `_split_sentences` keeps "98.8%" whole; resume cap error and JD cap warning. Plus a visual check of one rendered sample against the master.
+
+### Amendment 1: Role Prominence
+
+**Date:** October 30, 2026
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Confirmed by Gee and Mini (A1, A2). A3 added by Jonathan's decision after Gee's counter-case; it only narrows A1 and was not re-reviewed.
+
+#### Context
+
+1. **The pool is weighted toward old roles.** After the first pool load, 14 of the 19 approved items belong to the oldest role on the master resume (Avnet, 1997 to 2015), which the owner deliberately keeps short.
+2. **ADR-015 limits total size, not where it goes.** §6 caps the combined character count of the editable sections. Within that budget the model could add bullets to the oldest role and shorten newer roles, and §3.2 lets summary bullets cite any source, so an old role's bullet could also lead the profile summary.
+3. **The master already encodes intended prominence.** Each role's bullet count on the master reflects how much space the owner wants that role to take.
+
+#### Decision
+
+**A1. Per-role bullet cap.** A role's tailored bullet list may not contain more bullets than that role has on the master. Pool items and other master bullets may replace bullets in that role, but never add to the count.
+- Enforced in Python after §3 checks and §5 fallbacks: if a role has more bullets than its cap, the lowest-priority bullets are dropped (the model returns bullets in priority order, §2) until it fits. Each drop is recorded in the trace and makes the run state `partial`.
+- The prompt states the cap per role, so a well-behaved response needs no drops.
+- The §5 floor (at least one bullet per role) is unchanged. A1 sets the ceiling; §5 sets the floor.
+
+**A2. Summary exclusion flag.** A `role_map.yaml` entry may set `in_summary: false` (default `true`). A summary bullet whose `source_ids` include any master bullet or pool item bound to a role with `in_summary: false` fails §3.2 and is dropped per §5 (the summary floor still applies, reverting to the master summary bullets). Master summary bullets (`M:S:*`) and summary-only pool items (unmapped role periods) are not bound to a role and are unaffected.
+- Load-time rejections added to §1 (each disables tailoring for the run, status `master-copy`, reason recorded): `in_summary` present but not a boolean; two role periods mapped to the same master role that disagree on `in_summary`.
+- The flag lives in the owner's private role map, not in public code, so which roles are excluded is a configuration choice.
+
+**A3. Character ceiling for minimized roles.** For a role with `in_summary: false`, the total characters of its tailored bullets may not exceed the total characters of its master bullets. This closes the gap Gee identified in confirmation: a count cap alone lets a longer replacement bullet give a minimized role more space.
+- Enforced in Python after A1 and before the §6 budget: while the role is over its ceiling, the lowest-priority swapped-in bullet is replaced by the unused master bullet of that role it displaced (or, if none, dropped, never below the §5 floor); if still over, the role reverts to its master bullets. Each step is recorded in the trace and makes the run state `partial`.
+- The prompt states the ceiling for each such role.
+- Roles without the flag are limited only by A1 and the §6 budget, so recent roles keep their room to retune.
+
+#### Alternatives Considered
+
+- **Remove old-role items from the pool.** Rejected: the owner wants an old item to be able to replace a weaker one in that role when a JD calls for it (for example, a hands-on deployment-automation bullet for a CI/CD-heavy role).
+- **A per-role `max_bullets` setting in the role map.** Rejected for now: the master's own counts already express the owner's intent; a separate number would duplicate it and could drift. Revisit only if a role needs a cap different from its master count.
+- **Prompt instruction only.** Rejected: ADR-015's premise is that constraints on model output are enforced in Python, not requested.
+
+#### Consequences
+
+- `load_resume_pool()` returns `summary_excluded_roles` (the set of role indexes with `in_summary: false`) and applies the two new load-time rejections. (Implemented in the ADR-015 source-loading commit.)
+- `validate_tailoring()` applies A2 to summary bullets; new steps apply A1 and then A3 per role after fallbacks, before the §6 budget.
+- Tailoring prompt: lists each role's bullet cap and which roles may not be cited in the summary.
+- Trace: records A1 drops and A2 rejections with their reasons.
+- Tests: a role over its cap drops its lowest-priority bullets and reports `partial`; a pool item replacing a master bullet within the cap passes; a summary bullet citing an excluded role's master bullet, and one citing its pool item, are dropped; summary floor after A2 drops; master summary bullets and summary-only items are unaffected by A2; `in_summary` non-boolean and disagreeing entries reject at load. A3: a minimized role whose swaps exceed its master character total is brought back under it (swap reverted, then master bullets); a minimized role within its total passes; an unflagged role is not subject to A3.
