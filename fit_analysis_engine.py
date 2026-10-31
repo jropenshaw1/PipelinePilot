@@ -1112,6 +1112,290 @@ def retuned_items(res: dict) -> list[dict]:
     return items
 
 
+# ─────────────────────────────────────────────
+# Resume tailoring (ADR-015): render, trace, publication
+# render_tailored_resume() edits a copy of the master .docx in place so
+# formatting carries over (§7). write_resume_trace() writes the review trace.
+# publish_resume_pair() and recover_resume_publication() implement the
+# recoverable (not atomic) publication contract of §5.1.
+# ─────────────────────────────────────────────
+
+PUBLISH_JOURNAL = ".resume_publish.json"
+_RUN_ID_RE = re.compile(r"run_id=([0-9TZ]+-[0-9a-f]{8})")
+_TRACE_RUN_ID_RE = re.compile(r"^\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`", re.M)
+
+# Indirection so tests can inject failures between the two replacements.
+_replace = os.replace
+_unlink = os.unlink
+
+
+def new_run_id() -> str:
+    import secrets
+    from datetime import timezone
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+
+
+def _stamp(doc, run_id: str, state: str, retuned: int) -> None:
+    doc.core_properties.comments = (f"PipelinePilot resume tailoring: run_id={run_id}; "
+                                    f"state={state}; retuned={retuned}")
+
+
+def resume_run_id(path) -> str | None:
+    try:
+        return (_RUN_ID_RE.search(Document(str(path)).core_properties.comments or "") or [None, None])[1]
+    except Exception:
+        return None
+
+
+def trace_run_id(path) -> str | None:
+    try:
+        head = Path(path).read_text(encoding="utf-8")[:2000]
+    except OSError:
+        return None
+    m = _TRACE_RUN_ID_RE.search(head)
+    return m.group(1) if m else None
+
+
+def render_tailored_resume(master_docx, inventory: dict, res: dict, out_path,
+                           run_id: str, state: str) -> Path:
+    """Write the tailored resume to out_path by editing a copy of the master.
+    Only inventoried (single-run) paragraphs change; locked sections are
+    never touched. Added bullets clone an existing bullet paragraph."""
+    from docx.text.paragraph import Paragraph
+    doc = Document(str(master_docx))
+    paras = list(doc.paragraphs)
+
+    def set_text(index, text):
+        p = paras[index]
+        if len(p.runs) != 1:
+            raise RuntimeError(f"paragraph {index} is no longer a single run")
+        p.runs[0].text = text
+
+    set_text(inventory["headline"]["index"], res["headline"]["text"])
+    set_text(inventory["subtitle"]["index"], res["subtitle"]["text"])
+    set_text(inventory["summary_paragraph"]["index"], res["summary_paragraph"]["text"])
+    for c_master, c in zip(inventory["competencies"], res["competencies"]):
+        set_text(c_master["index"], _comp_line(c))
+
+    def set_bullets(master_bullets, bullets):
+        slots = [paras[b["index"]] for b in master_bullets]
+        for slot, b in zip(slots, bullets):
+            if len(slot.runs) != 1:
+                raise RuntimeError("bullet paragraph is no longer a single run")
+            slot.runs[0].text = b["text"]
+        last = slots[min(len(bullets), len(slots)) - 1]
+        for b in bullets[len(slots):]:
+            clone = copy.deepcopy(slots[-1]._p)
+            last._p.addnext(clone)
+            last = Paragraph(clone, last._parent)
+            last.runs[0].text = b["text"]
+        for slot in slots[len(bullets):]:
+            slot._p.getparent().remove(slot._p)
+
+    set_bullets(inventory["summary_bullets"], res["summary_bullets"])
+    for r_master, r in zip(inventory["roles"], res["roles"]):
+        set_bullets(r_master["bullets"], r["bullets"])
+
+    _stamp(doc, run_id, state, len(retuned_items(res)))
+    out = Path(out_path)
+    doc.save(str(out))
+    return out
+
+
+def master_copy_resume(master_docx, out_path, run_id: str) -> Path:
+    """The master, unchanged except for the run stamp (state master-copy)."""
+    doc = Document(str(master_docx))
+    _stamp(doc, run_id, "master-copy", 0)
+    out = Path(out_path)
+    doc.save(str(out))
+    return out
+
+
+def write_resume_trace(out_path, *, run_id: str, state: str, company: str, role: str,
+                       model: str, inventory: dict | None, pool: dict | None,
+                       res: dict | None, reason: str = "") -> Path:
+    """The review trace (ADR-015 §4, §5, §6). Retuned items come first, each
+    beside its source text."""
+    lines = [f"# Resume trace: {company} | {role}", "",
+             f"**run_id:** `{run_id}`", f"**state:** {state}", f"**model:** {model}"]
+    if inventory:
+        lines.append(f"**master:** {Path(inventory['path']).name} "
+                     f"(sha256 {inventory['sha256'][:16]}, modified {inventory['mtime']})")
+    if reason:
+        lines.append(f"**reason:** {reason}")
+    if res is None:
+        lines += ["", "The resume is an unchanged copy of the master. Nothing to review."]
+    else:
+        table = _source_table(inventory, pool or {})
+        items = retuned_items(res)
+        b = res.get("budget", {})
+        lines.append(f"**retuned items:** {len(items)}")
+        if b:
+            warn = " (warning: above 97%)" if b.get("warn") else ""
+            lines.append(f"**budget:** {b['used']:,} of {b['limit']:,} characters "
+                         f"({b['share']:.0%}){warn}")
+        lines += ["", "## Retuned items: review before sending", ""]
+        if not items:
+            lines.append("_(none: every published line is copied word for word from a source)_")
+        for it in items:
+            lines += [f"### {it['field']}", "", f"> {it['text']}", ""]
+            if it["source_ids"]:
+                for sid in it["source_ids"]:
+                    lines.append(f"- source `{sid}`: {table[sid]['text']}")
+            else:
+                key = it["field"]
+                if key in ("headline", "subtitle", "summary_paragraph"):
+                    lines.append(f"- master: {inventory[key]['text']}")
+                else:
+                    lines.append("- sources: master and pool vocabulary")
+            lines.append("")
+        lines += ["## Changes the checks made", ""]
+        lines += [f"- **{e['field']}** {e['action']}: {e['reason']}" for e in res["events"]] or ["_(none)_"]
+        lines += ["", "## Published resume", "",
+                  f"- headline ({res['headline']['status']}): {res['headline']['text']}",
+                  f"- subtitle ({res['subtitle']['status']}): {res['subtitle']['text']}", ""]
+        for n, sb in enumerate(res["summary_bullets"]):
+            lines.append(f"- summary {n} ({sb['status']}, {', '.join(sb['source_ids'])}): {sb['text']}")
+        for r_master, r in zip(inventory["roles"], res["roles"]):
+            lines += ["", f"**{r_master['title']}** ({r_master['company_line']})"]
+            for rb in r["bullets"]:
+                lines.append(f"- ({rb['status']}, {', '.join(rb['source_ids'])}) {rb['text']}")
+    out = Path(out_path)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+def _safe_unlink(path: Path) -> bool:
+    try:
+        if path.exists():
+            _unlink(path)
+        return True
+    except OSError:
+        return False
+
+
+def _validate_new_pair(resume_new: Path, trace_new: Path, run_id: str) -> str | None:
+    if resume_run_id(resume_new) != run_id:
+        return "prepared resume does not carry the run_id"
+    if trace_run_id(trace_new) != run_id:
+        return "prepared trace does not carry the run_id"
+    return None
+
+
+def publish_resume_pair(folder, resume_name: str, trace_name: str,
+                        resume_new: Path, trace_new: Path, run_id: str) -> dict:
+    """ADR-015 §5.1 steps 2 to 6, after both .new files are prepared.
+    Returns {"outcome": "published" | "publication-failed", "detail": str}."""
+    folder = Path(folder)
+    finals = [folder / resume_name, folder / trace_name]
+    news = [Path(resume_new), Path(trace_new)]
+    prevs = [p.with_name(p.name + ".prev") for p in finals]
+    journal = folder / PUBLISH_JOURNAL
+
+    def cleanup_new():
+        for n in news:
+            _safe_unlink(n)
+
+    problem = _validate_new_pair(news[0], news[1], run_id)
+    if problem:
+        cleanup_new()
+        return {"outcome": "publication-failed", "detail": problem + "; previous resume kept"}
+    try:
+        journal.write_text(json.dumps({
+            "run_id": run_id, "phase": "replacing",
+            "final": [p.name for p in finals], "new": [p.name for p in news],
+        }), encoding="utf-8")
+    except OSError as e:
+        cleanup_new()
+        return {"outcome": "publication-failed", "detail": f"journal not written ({e}); previous resume kept"}
+
+    try:
+        for f, prev in zip(finals, prevs):
+            if f.exists():
+                _replace(f, prev)
+        for n, f in zip(news, finals):
+            _replace(n, f)
+    except OSError as e:
+        restored = _roll_back(folder, finals, news, prevs, run_id)
+        if not restored:
+            return {"outcome": "publication-failed",
+                    "detail": (f"manual recovery needed ({e}). Files on disk: "
+                               + ", ".join(p.name for p in prevs + news if p.exists())
+                               + f"; journal {PUBLISH_JOURNAL} kept")}
+        _safe_unlink(journal)
+        return {"outcome": "publication-failed", "detail": f"{e}; previous resume kept"}
+
+    _safe_unlink(journal)
+    for prev in prevs:
+        _safe_unlink(prev)
+    return {"outcome": "published", "detail": ""}
+
+
+def _roll_back(folder: Path, finals, news, prevs, run_id: str) -> bool:
+    """Put the previous pair back. True on success."""
+    ok = True
+    for f in finals:
+        carries = (resume_run_id(f) if f.suffix == ".docx" else trace_run_id(f)) == run_id
+        if f.exists() and carries and not _safe_unlink(f):
+            ok = False
+    for f, prev in zip(finals, prevs):
+        if prev.exists():
+            try:
+                _replace(prev, f)
+            except OSError:
+                ok = False
+    for n in news:
+        _safe_unlink(n)
+    return ok
+
+
+def recover_resume_publication(folder) -> str | None:
+    """Resolve an interrupted publication before a new run (ADR-015 §5.1).
+    Returns a message for the progress dialog, or None if nothing was pending."""
+    folder = Path(folder)
+    journal = folder / PUBLISH_JOURNAL
+    if not journal.exists():
+        return None
+    try:
+        data = json.loads(journal.read_text(encoding="utf-8"))
+        run_id = data["run_id"]
+        finals = [folder / n for n in data["final"]]
+        news = [folder / n for n in data["new"]]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise RuntimeError(f"An interrupted resume publication left {PUBLISH_JOURNAL} in {folder.name}, "
+                           f"and it cannot be read ({e}). Check the resume files by hand, then delete it.")
+    prevs = [p.with_name(p.name + ".prev") for p in finals]
+    resume_ok = finals[0].exists() and resume_run_id(finals[0]) == run_id
+    trace_ok = finals[1].exists() and trace_run_id(finals[1]) == run_id
+    if resume_ok and trace_ok:
+        _safe_unlink(journal)
+        for prev in prevs:
+            _safe_unlink(prev)
+        return None
+    if not _roll_back(folder, finals, news, prevs, run_id):
+        raise RuntimeError(f"An interrupted resume publication in {folder.name} could not be rolled back. "
+                           f"Check the .prev and .new files by hand; {PUBLISH_JOURNAL} was kept.")
+    _safe_unlink(journal)
+    return "Previous resume restored after an interrupted publication."
+
+
+def resume_pair_problem(folder, resume_name: str, trace_name: str) -> str | None:
+    """For the startup check (report only): an in-flight journal or a resume
+    and trace whose run_ids do not match. A folder with neither file, or a
+    master copy from before ADR-015 with no trace, is not a problem."""
+    folder = Path(folder)
+    if (folder / PUBLISH_JOURNAL).exists():
+        return "interrupted resume publication"
+    resume, trace = folder / resume_name, folder / trace_name
+    if not trace.exists():
+        return None
+    if not resume.exists():
+        return "resume trace without its resume"
+    if resume_run_id(resume) != trace_run_id(trace):
+        return "resume and trace from different runs"
+    return None
+
+
 def generate_tailored_resume(result: dict, company: str, role: str,
                               folder_path: Path, resume_path: str) -> Path:
     """
