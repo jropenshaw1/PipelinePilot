@@ -57,6 +57,11 @@ def _sanitize(text: str) -> str:
 MODEL = "claude-opus-4-7"
 MAX_TOKENS = 8000
 
+# Input caps (ADR-015 §9). The resume is never truncated: a longer master
+# stops the run. A longer JD is truncated with a visible warning.
+RESUME_MAX_CHARS = 20000
+JD_MAX_CHARS = 12000
+
 # Stage definitions for the progress dialog.
 # Each tuple: (stage_id, display_label, subtitle)
 ANALYSIS_STAGES = [
@@ -137,17 +142,14 @@ HARD VOICE BANS — these are enforcement rules, not style suggestions. A violat
 
 5. No em dashes anywhere in the cover letter. Use commas, colons, or new sentences.
 
-6. When referencing the datacenter exit or "10 infrastructure teams" accomplishment, include the full team list parenthetically. The teams are: Network Engineering, Audio/Visual & Telecom, Unix/Linux Engineering, Virtualization Engineering, Database Administration, Storage Administration, Backup Administration, Windows Engineering, Office 365 Administration, Disaster Recovery. Example: "led 10 infrastructure teams (Network Engineering, Audio/Visual & Telecom, Unix/Linux Engineering, Virtualization Engineering, Database Administration, Storage Administration, Backup Administration, Windows Engineering, Office 365 Administration, Disaster Recovery) through the hospitality industry's first complete AWS datacenter exit." This parenthetical provides signal depth and demonstrates the scope of cross-functional leadership.
-
 CRITICAL — Job title accuracy: The authoritative job title is provided at the top of the user message as COMPANY and ROLE. Use the ROLE value verbatim when referencing the position in the cover letter. Do not paraphrase, shorten, reword, or infer a different title from the JD text.
 
-Self-check before returning JSON: Scan the generated cover_letter field for violations of bans 1-6 above. Specifically check:
+Self-check before returning JSON: Scan the generated cover_letter field for violations of bans 1-5 above. Specifically check:
 1. Does the opening sentence contain a fact about the candidate (not "I am writing to express...")?  
 2. Are there any superlative matching phrases ("aligns with," "demonstrates," "uniquely positioned to")?  
 3. Does any sentence speculate about what the company needs or is looking for?  
 4. Does the closing avoid generic promises ("contribute to your growth," "be a valuable addition")?  
-5. Are there any em dashes in the letter?  
-6. If "10 infrastructure teams" or "datacenter exit" appears, does it include the full parenthetical list of teams?
+5. Are there any em dashes in the letter?
 
 If any violation is found, rewrite the affected sentence before returning the JSON. A violation that survives to the response is a failure of this task.
 
@@ -549,7 +551,7 @@ _MD = """\
 # Fit Analysis — {company} | {role}
 
 *Generated: {generated_date} | Model: {model}*
-
+{input_note}
 ---
 
 ## Role Summary
@@ -602,17 +604,48 @@ _MD = """\
 """
 
 
+# Sentence splitting (ADR-015 §10). Splits only where sentence punctuation is
+# followed by whitespace and a capital letter, so decimals such as "98.8%"
+# stay whole.
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_BREAK.split(text or "") if s.strip()]
+
+
+def _top_strengths(result: dict) -> list[str]:
+    """Up to three advocate-case sentences, trailing period removed."""
+    return [s.rstrip(".") for s in _split_sentences(result.get("advocate_case", ""))
+            if len(s) > 20][:3]
+
+
+def _apply_input_caps(jd_text: str, resume_text: str) -> tuple[str, str, str]:
+    """Apply ADR-015 §9 caps. Returns (jd_text, resume_text, jd_note).
+    Raises RuntimeError when the resume exceeds its cap (never truncated)."""
+    if len(resume_text) > RESUME_MAX_CHARS:
+        raise RuntimeError(
+            f"Master resume is {len(resume_text):,} characters; the limit is "
+            f"{RESUME_MAX_CHARS:,}.\n\nThe resume is never truncated. Shorten the "
+            "master resume, then run the analysis again."
+        )
+    jd_note = ""
+    if len(jd_text) > JD_MAX_CHARS:
+        jd_note = (f"Job description truncated to {JD_MAX_CHARS:,} of "
+                   f"{len(jd_text):,} characters.")
+        jd_text = jd_text[:JD_MAX_CHARS]
+    return jd_text, resume_text, jd_note
+
+
 def _bl(items) -> str:
     return "\n".join(f"- {i}" for i in items) if items else "_(none)_"
 
 
 def write_fit_analysis_md(folder_path: Path, company: str, role: str,
-                           job_url, fit_threshold: float, result: dict) -> Path:
+                           job_url, fit_threshold: float, result: dict,
+                           jd_note: str = "") -> Path:
     top_gaps = [g["area"] for g in result.get("gaps", [])[:3]]
-    top_strengths = []
-    adv = result.get("advocate_case", "")
-    if adv:
-        top_strengths = [s.strip() for s in adv.split(".") if len(s.strip()) > 20][:3]
+    top_strengths = _top_strengths(result)
 
     yaml_data = {
         "company": company,
@@ -649,6 +682,7 @@ def write_fit_analysis_md(folder_path: Path, company: str, role: str,
         fit_pct=f"{result['fit_score']:.0%}",
         score_justification=result.get("score_justification", ""),
         next_steps=_bl(result.get("next_steps", [])),
+        input_note=f"\n> **Input warning:** {jd_note}\n" if jd_note else "",
     )
 
     out = folder_path / "fit_analysis.md"
@@ -720,9 +754,13 @@ def run_fit_analysis(
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
             # values as named facts at the top of the user message.
+            jd_text, resume_text, jd_note = _apply_input_caps(jd_text, resume_text)
+            if jd_note:
+                _p("Reading job description...", jd_note, stage="read_inputs")
+
             _p("Running fit analysis...", "All agents (single call)", stage="api_call")
             personal_context = _load_context_skill(context_skill_path)
-            result = _call_api(client, jd_text[:8000], resume_text[:6000], company, role,
+            result = _call_api(client, jd_text, resume_text, company, role,
                                personal_context=personal_context)
 
             recommendation = (
@@ -732,7 +770,8 @@ def run_fit_analysis(
 
             _p("Writing fit_analysis.md...", stage="fit_summary")
             md_path = write_fit_analysis_md(
-                folder_path, company, role, job_url, fit_threshold, result
+                folder_path, company, role, job_url, fit_threshold, result,
+                jd_note=jd_note,
             )
 
             _p("Generating fit summary...", stage="fit_summary")
@@ -755,10 +794,7 @@ def run_fit_analysis(
                 "fit_score": result["fit_score"],
                 "fit_threshold": fit_threshold,
                 "recommendation": recommendation,
-                "top_strengths": str([
-                    s.strip() for s in result.get("advocate_case", "").split(".")
-                    if len(s.strip()) > 20
-                ][:3]),
+                "top_strengths": str(_top_strengths(result)),
                 "top_gaps": str([g["area"] for g in result.get("gaps", [])[:3]]),
                 "jfa_completed": 1,
             }
@@ -767,7 +803,10 @@ def run_fit_analysis(
             database.update_opportunity(db_path, folder_name, updates)
 
             output_files = [md_path, fa_path, cl_path, res_path, ip_path]
-            _p("Complete.", f"{result['fit_score']:.0%} — {recommendation}", stage="complete")
+            done = f"{result['fit_score']:.0%} — {recommendation}"
+            if jd_note:
+                done += f" | {jd_note}"
+            _p("Complete.", done, stage="complete")
             on_success(result, output_files)
 
         except Exception as e:
