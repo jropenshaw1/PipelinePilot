@@ -69,14 +69,18 @@ def gen(env_, client, pool_path=None, model="claude-test-1"):
 
 
 def files(folder):
-    return sorted(p.name for p in folder.iterdir())
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
+
+
+TRACE = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
 
 
 def test_tailored_run_publishes_pair_with_matching_run_id(env):
     master, folder, pool, inv = env
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "tailored" and out["outcome"] == "published"
-    assert files(folder) == ["ResumeTrace_Acme_Director.md", "Resume_Acme_Director.docx"]
+    assert files(folder) == ["Resume_Acme_Director.docx", TRACE]
+    assert out["trace"] == folder / TRACE
     assert fae.resume_run_id(out["resume"]) == fae.trace_run_id(out["trace"])
     assert "0 retuned items need review; published" in out["message"]
 
@@ -169,7 +173,7 @@ def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     out = gen(env, Client(echo(inv)))
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and out["resume"] is None
-    assert files(folder) == ["ResumeTrace_Acme_Director.md", "Resume_Acme_Director.docx"]
+    assert files(folder) == ["Resume_Acme_Director.docx", TRACE]
     assert fae.resume_run_id(folder / "Resume_Acme_Director.docx") == old
 
 
@@ -178,8 +182,8 @@ def test_interrupted_publication_is_recovered_first(env):
     gen(env, Client(echo(inv)))
     (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(
         {"run_id": "20261031T000000Z-deadbeef", "phase": "replacing",
-         "final": ["Resume_Acme_Director.docx", "ResumeTrace_Acme_Director.md"],
-         "new": ["Resume_Acme_Director.docx.new", "ResumeTrace_Acme_Director.md.new"]}), encoding="utf-8")
+         "final": ["Resume_Acme_Director.docx", TRACE],
+         "new": ["Resume_Acme_Director.docx.new", TRACE + ".new"]}), encoding="utf-8")
     out = gen(env, Client(echo(inv)))
     assert out["outcome"] == "published"
     assert not (folder / fae.PUBLISH_JOURNAL).exists()

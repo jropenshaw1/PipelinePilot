@@ -6,12 +6,14 @@ import fit_analysis_engine as fae
 from test_archive import _opp, roots  # noqa: F401  (fixture)
 from test_resume_sources import make_master
 
-RES, TR = "Resume_Acme_DirectorIT.docx", "ResumeTrace_Acme_DirectorIT.md"
+RES = "Resume_Acme_DirectorIT.docx"
+TR = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_DirectorIT.md"
 A, B = "20261030T000000Z-0000000a", "20261031T000000Z-0000000b"
 
 
 def pair(folder, master, resume_id, trace_id):
     fae.master_copy_resume(master, folder / RES, resume_id)
+    (folder / fae.TRACE_DIR).mkdir(exist_ok=True)
     (folder / TR).write_text(f"**run_id:** `{trace_id}`\n", encoding="utf-8")
 
 
@@ -54,6 +56,7 @@ def test_archived_folder_is_checked_in_the_archive(roots, tmp_path):
 def test_trace_without_resume_is_reported(roots):
     job, arc, db = roots
     name = _opp(db, job)
+    (job / name / fae.TRACE_DIR).mkdir()
     (job / name / TR).write_text(f"**run_id:** `{A}`\n", encoding="utf-8")
     assert [i["status"] for i in database.check_consistency(db)["resume_pair"]] == ["resume trace without its resume"]
 
@@ -62,3 +65,11 @@ def test_pool_path_setting_defaults_blank():
     import config
     from models import RESUME_POOL_PATH_KEY
     assert config.DEFAULTS[RESUME_POOL_PATH_KEY] == ""
+
+
+def test_old_flat_trace_name_is_not_paired(roots, tmp_path):
+    """Traces are found only under TRACE_DIR; a flat ResumeTrace_ file is not read."""
+    job, arc, db = roots
+    name = _opp(db, job)
+    (job / name / "ResumeTrace_Acme_DirectorIT.md").write_text(f"**run_id:** `{A}`\n", encoding="utf-8")
+    assert database.check_consistency(db)["resume_pair"] == []

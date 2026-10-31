@@ -290,3 +290,43 @@ def test_pair_problem_ok_for_matching_pair(setup):
     master, folder = setup
     publish(folder, NEW, master, "new")
     assert fae.resume_pair_problem(folder, RES, TR) is None
+
+
+def test_trace_in_subfolder_publishes_and_recovers(setup):
+    """The journal records paths relative to the folder, so an interrupted
+    publication of a trace under TRACE_DIR is rolled back in the right place."""
+    master, folder = setup
+    tr = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
+    (folder / fae.TRACE_DIR).mkdir(parents=True)
+    def pub(run_id, label):
+        r = fae.master_copy_resume(master, folder / (RES + ".new"), run_id)
+        t = folder / (tr + ".new")
+        t.write_text(f"**run_id:** `{run_id}`\n\n{label}\n", encoding="utf-8")
+        return r, t
+    r, t = pub(OLD, "old")
+    assert fae.publish_resume_pair(folder, RES, tr, r, t, OLD)["outcome"] == "published"
+    r, t = pub(NEW, "new")
+    journal = {"run_id": NEW, "phase": "replacing", "final": [RES, tr], "new": [r.name, tr + ".new"]}
+    (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(journal), encoding="utf-8")
+    fae.os.replace(folder / RES, folder / (RES + ".prev"))
+    fae.os.replace(folder / tr, folder / (tr + ".prev"))
+    assert fae.recover_resume_publication(folder) == "Previous resume restored after an interrupted publication."
+    assert fae.trace_run_id(folder / tr) == OLD and fae.resume_run_id(folder / RES) == OLD
+    assert sorted(p.name for p in (folder / fae.TRACE_DIR).iterdir()) == [fae.TRACE_PREFIX + "Acme_Director.md"]
+
+
+def test_journal_records_paths_relative_to_folder(setup, monkeypatch):
+    master, folder = setup
+    tr = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
+    (folder / fae.TRACE_DIR).mkdir(parents=True)
+    r = fae.master_copy_resume(master, folder / (RES + ".new"), NEW)
+    t = folder / (tr + ".new")
+    t.write_text(f"**run_id:** `{NEW}`\n", encoding="utf-8")
+    seen = {}
+    real = fae._replace
+    def spy(src, dst):
+        seen.setdefault("journal", json.loads((folder / fae.PUBLISH_JOURNAL).read_text(encoding="utf-8")))
+        return real(src, dst)
+    monkeypatch.setattr(fae, "_replace", spy)
+    assert fae.publish_resume_pair(folder, RES, tr, r, t, NEW)["outcome"] == "published"
+    assert seen["journal"]["final"] == [RES, tr] and seen["journal"]["new"] == [RES + ".new", tr + ".new"]

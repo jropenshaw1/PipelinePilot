@@ -9,7 +9,8 @@
 # Runs in a background thread. Never blocks the UI.
 # Writes to opportunity folder:
 #   - fit_analysis.md              (YAML → SQLite index)
-#   - ResumeTrace_{Company}_{Role}.md  (ADR-015 review trace, with the resume)
+#   - _review/TRACE_DO-NOT-UPLOAD_{Company}_{Role}.md  (ADR-015 review trace; in a
+#     subfolder so a file picker never offers it beside the resume)
 #   - FitAnalysis_{Company}.docx
 #   - CoverLetter_{Company}_{Role}.docx
 #   - Resume_{Company}_{Role}.docx
@@ -1132,6 +1133,10 @@ def retuned_items(res: dict) -> list[dict]:
 # ─────────────────────────────────────────────
 
 PUBLISH_JOURNAL = ".resume_publish.json"
+# The trace sits in a subfolder under a name that says what it is, so it is not
+# uploaded to an application by mistake in place of the resume.
+TRACE_DIR = "_review"
+TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD_"
 _RUN_ID_RE = re.compile(r"run_id=([0-9TZ]+-[0-9a-f]{8})")
 _TRACE_RUN_ID_RE = re.compile(r"^\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`", re.M)
 
@@ -1314,7 +1319,7 @@ def publish_resume_pair(folder, resume_name: str, trace_name: str,
     try:
         journal.write_text(json.dumps({
             "run_id": run_id, "phase": "replacing",
-            "final": [p.name for p in finals], "new": [p.name for p in news],
+            "final": [_rel(folder, p) for p in finals], "new": [_rel(folder, p) for p in news],
         }), encoding="utf-8")
     except OSError as e:
         cleanup_new()
@@ -1340,6 +1345,12 @@ def publish_resume_pair(folder, resume_name: str, trace_name: str,
     for prev in prevs:
         _safe_unlink(prev)
     return {"outcome": "published", "detail": ""}
+
+
+def _rel(folder: Path, p) -> str:
+    """Journal paths are relative to the folder, so a trace in TRACE_DIR is recovered
+    from the right place. Journals that hold bare names still read the same way."""
+    return Path(p).relative_to(folder).as_posix()
 
 
 def _roll_back(folder: Path, finals, news, prevs, run_id: str) -> bool:
@@ -1399,9 +1410,9 @@ def folder_resume_problems(folder) -> list[str]:
     if (folder / PUBLISH_JOURNAL).exists():
         return ["interrupted resume publication"]
     problems = []
-    for trace in sorted(folder.glob("ResumeTrace_*.md")):
-        resume_name = "Resume_" + trace.name[len("ResumeTrace_"):-len(".md")] + ".docx"
-        problem = resume_pair_problem(folder, resume_name, trace.name)
+    for trace in sorted((folder / TRACE_DIR).glob(TRACE_PREFIX + "*.md")):
+        resume_name = "Resume_" + trace.name[len(TRACE_PREFIX):-len(".md")] + ".docx"
+        problem = resume_pair_problem(folder, resume_name, f"{TRACE_DIR}/{trace.name}")
         if problem:
             problems.append(problem)
     return problems
@@ -1544,13 +1555,14 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
     folder_path = Path(folder_path)
     master = _master_docx_path(resume_path)
     resume_name = f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
-    trace_name = f"ResumeTrace_{_sanitize(company)}_{_sanitize(role)}.md"
+    trace_name = f"{TRACE_DIR}/{TRACE_PREFIX}{_sanitize(company)}_{_sanitize(role)}.md"
     notes = []
     recovered = recover_resume_publication(folder_path)
     if recovered:
         notes.append(recovered)
 
     run_id = new_run_id()
+    (folder_path / TRACE_DIR).mkdir(exist_ok=True)
     resume_new = folder_path / (resume_name + ".new")
     trace_new = folder_path / (trace_name + ".new")
     state, retuned, reason = "master-copy", 0, ""
