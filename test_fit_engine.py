@@ -67,7 +67,8 @@ def _result(adv):
 def test_fit_analysis_md_keeps_decimal_and_writes_jd_note(tmp_path):
     adv = "Achieved 98.8% allocation accuracy across the portfolio. Built three practices from zero."
     out = fae.write_fit_analysis_md(tmp_path, "Acme", "Director", None, 0.65,
-                                    _result(adv), jd_note="Job description truncated.")
+                                    _result(adv), jd_note="Job description truncated.",
+                                    model="claude-test-1")
     text = out.read_text(encoding="utf-8")
     front = yaml.safe_load(text.split("---")[1])
     assert front["top_strengths"][0] == "Achieved 98.8% allocation accuracy across the portfolio"
@@ -75,5 +76,6 @@ def test_fit_analysis_md_keeps_decimal_and_writes_jd_note(tmp_path):
 
 
 def test_fit_analysis_md_without_note_has_no_warning(tmp_path):
-    out = fae.write_fit_analysis_md(tmp_path, "Acme", "Director", None, 0.65, _result(""))
+    out = fae.write_fit_analysis_md(tmp_path, "Acme", "Director", None, 0.65, _result(""),
+                                    model="claude-test-1")
     assert "Input warning" not in out.read_text(encoding="utf-8")

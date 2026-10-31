@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # Only what the test suite imports. The desktop UI (customtkinter),
-      # fit analysis (anthropic) and MCP server are not under test here.
-      - run: pip install pytest requests PyYAML python-docx
-      - run: python -m pytest -v test_ob_bridge.py test_follow_up.py test_job_url.py test_vault.py test_vault_integration.py test_status_model.py test_archive.py test_migration.py test_fit_engine.py test_resume_sources.py
+      # Only what the test suite imports. The desktop UI (customtkinter)
+      # and MCP server are not under test here; anthropic is installed for its error classes.
+      - run: pip install pytest requests PyYAML python-docx anthropic
+      - run: python -m pytest -v test_ob_bridge.py test_follow_up.py test_job_url.py test_vault.py test_vault_integration.py test_status_model.py test_archive.py test_migration.py test_fit_engine.py test_resume_sources.py test_model_setting.py test_model_errors.py

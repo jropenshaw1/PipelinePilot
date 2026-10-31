@@ -35,6 +35,8 @@ from models import (
     OB_KEY_VAULT_ID_KEY,
     ANTHROPIC_KEY_VAULT_ID_KEY,
     DCLI_PATH_KEY,
+    DEFAULT_JFA_MODEL,
+    JFA_MODEL_KEY,
 )
 
 # Date fields entered by hand in the detail view (YYYY-MM-DD)
@@ -747,6 +749,28 @@ class PipelinePilotApp(ctk.CTk):
         ctk.CTkButton(
             cs_row, text="Browse", command=self._browse_context_skill, width=90, fg_color=C_PANEL,
         ).pack(side="left")
+
+        # ── JFA Model (ADR-016) ──
+        self._settings_section(frame, "JFA Model")
+
+        jm_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        jm_frame.pack(fill="x", pady=(0, 20))
+        jm_inner = ctk.CTkFrame(jm_frame, fg_color="transparent")
+        jm_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            jm_inner,
+            text=f"Exact Anthropic model ID used for fit analysis and resume tailoring.\n"
+                 f"Leave blank for the default ({DEFAULT_JFA_MODEL}). When you change it,\n"
+                 f"update the agent CMDB row in the same sitting.",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._jfa_model_var = ctk.StringVar(value=self.cfg.get(JFA_MODEL_KEY, DEFAULT_JFA_MODEL))
+        ctk.CTkEntry(
+            jm_inner, textvariable=self._jfa_model_var, width=440, font=ctk.CTkFont(size=11),
+        ).pack(anchor="w")
 
         # ── Agent Vault ──
         self._settings_section(frame, "Agent Vault Configuration")
@@ -1781,6 +1805,7 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["follow_up_offset_days"] = offset
         self.cfg["resume_path"] = self._resume_path_var.get().strip()
         self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
+        self.cfg[JFA_MODEL_KEY] = self._jfa_model_var.get().strip()
         self.cfg[OB_SUPABASE_URL_KEY] = self._ob_url_var.get().strip()
         self.cfg[AGENT_VAULT_ACCOUNT_KEY] = self._vault_account_var.get().strip()
         self.cfg[OB_KEY_VAULT_ID_KEY] = self._ob_vault_id_var.get().strip()
@@ -2632,6 +2657,7 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             on_error=self._handle_error,
             progress_cb=self._handle_progress,
             context_skill_path=self.cfg.get("context_skill_path", ""),
+            model=self.cfg.get(JFA_MODEL_KEY, ""),
         )
 
     def _handle_progress(self, step: str, detail: str = "", stage: str = None):

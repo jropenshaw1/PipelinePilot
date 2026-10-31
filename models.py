@@ -113,6 +113,10 @@ OB_KEY_VAULT_ID_KEY = "ob_key_vault_id"
 ANTHROPIC_KEY_VAULT_ID_KEY = "anthropic_key_vault_id"
 DCLI_PATH_KEY = "dcli_path"
 
+# Fit analysis model (ADR-016): an exact Anthropic model ID, pinned in config
+JFA_MODEL_KEY = "jfa_model"
+DEFAULT_JFA_MODEL = "claude-opus-5-5"
+
 # Archive on Done (ADR-014)
 ARCHIVE_ROOT_KEY = "archive_root"
 DEFAULT_ARCHIVE_DIRNAME = "001_ArchiveJobSearch"

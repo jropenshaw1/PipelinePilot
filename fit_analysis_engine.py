@@ -25,6 +25,7 @@ from pathlib import Path
 
 import database
 import vault
+from models import DEFAULT_JFA_MODEL
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -54,8 +55,31 @@ def _sanitize(text: str) -> str:
 # Config
 # ─────────────────────────────────────────────
 
-MODEL = "claude-opus-4-7"
-MAX_TOKENS = 8000
+# Output ceiling per call. With Opus 5.5 it covers thinking plus the JSON
+# (ADR-016 Decision 5); tokens are billed only as used.
+MAX_TOKENS = 32000
+
+
+def resolve_model(value) -> str:
+    """The one model resolution point (ADR-016): blank means the default."""
+    text = (value or "").strip() if isinstance(value, str) else ""
+    return text or DEFAULT_JFA_MODEL
+
+
+def _response_text(message) -> str:
+    """Text of an API response, selected by block type (thinking blocks may
+    come first, ADR-016 Decision 5). A response cut off by max_tokens is
+    reported as such, not as invalid JSON."""
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "The model ran out of output tokens before finishing its response.\n\n"
+            "Run the analysis again. If it happens again, the output limit needs raising."
+        )
+    text = "".join(b.text for b in (message.content or [])
+                   if getattr(b, "type", None) == "text")
+    if not text.strip():
+        raise RuntimeError("The API response contained no text.")
+    return text
 
 # Input caps (ADR-015 §9). The resume is never truncated: a longer master
 # stops the run. A longer JD is truncated with a visible warning.
@@ -245,7 +269,7 @@ def find_jd_file(folder_path: Path) -> Path:
 # ─────────────────────────────────────────────
 
 def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
-              personal_context: str = "") -> dict:
+              personal_context: str = "", *, model: str) -> dict:
     effective_prompt = SYSTEM_PROMPT
     if personal_context:
         effective_prompt = (
@@ -260,7 +284,7 @@ def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
     # prefix. Only the final user message (company/role/JD) is processed
     # fresh on runs 2+. 5-minute TTL refreshes on each hit.
     message = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=MAX_TOKENS,
         system=[{
             "type": "text",
@@ -281,7 +305,7 @@ def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
             )}
         ]
     )
-    raw = message.content[0].text.strip()
+    raw = _response_text(message).strip()
     raw = re.sub(r"^```json\s*", "", raw)
     raw = re.sub(r"```$", "", raw.strip())
     try:
@@ -850,7 +874,7 @@ def _bl(items) -> str:
 
 def write_fit_analysis_md(folder_path: Path, company: str, role: str,
                            job_url, fit_threshold: float, result: dict,
-                           jd_note: str = "") -> Path:
+                           jd_note: str = "", *, model: str) -> Path:
     top_gaps = [g["area"] for g in result.get("gaps", [])[:3]]
     top_strengths = _top_strengths(result)
 
@@ -866,7 +890,7 @@ def write_fit_analysis_md(folder_path: Path, company: str, role: str,
         "top_strengths": top_strengths,
         "top_gaps": top_gaps,
         "generated_date": date.today().isoformat(),
-        "model": MODEL,
+        "model": model,
     }
 
     alignment_lines = [
@@ -880,7 +904,7 @@ def write_fit_analysis_md(folder_path: Path, company: str, role: str,
     content = _MD.format(
         yaml_block=yaml.dump(yaml_data, default_flow_style=False, allow_unicode=True).strip(),
         company=company, role=role,
-        generated_date=date.today().isoformat(), model=MODEL,
+        generated_date=date.today().isoformat(), model=model,
         role_summary=result.get("role_summary", ""),
         alignment="\n".join(alignment_lines) if alignment_lines else "_(none)_",
         gaps="\n".join(gap_lines) if gap_lines else "_(none)_",
@@ -901,6 +925,41 @@ def write_fit_analysis_md(folder_path: Path, company: str, role: str,
 # Main entry point
 # ─────────────────────────────────────────────
 
+def _is_model_not_found(e) -> bool:
+    """True only for the API's not-found error (HTTP 404): a model ID that does
+    not exist or that the key cannot access (ADR-016 Decision 4). A 400 that
+    mentions the model is a request error, not this."""
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    return isinstance(e, anthropic.NotFoundError)
+
+
+def model_unavailable_message(model: str) -> str:
+    return (f"Model '{model}' is not available. Update Settings → JFA Model, "
+            "then run the analysis again.")
+
+
+def _error_message(e: Exception, model: str) -> str:
+    """User-facing message for a failed analysis run."""
+    if isinstance(e, vault.VaultError):
+        return str(e)
+    if _is_model_not_found(e):
+        return model_unavailable_message(model)
+    try:
+        import anthropic
+        if isinstance(e, anthropic.AuthenticationError):
+            return "Anthropic rejected the credential retrieved from the agent vault."
+        if isinstance(e, anthropic.RateLimitError):
+            return "Rate limit reached. Wait a moment and try again."
+    except ImportError:
+        pass
+    if isinstance(e, (FileNotFoundError, RuntimeError)):
+        return str(e)
+    return f"Unexpected error — {type(e).__name__}: {e}"
+
+
 def run_fit_analysis(
     db_path: Path,
     job_search_root: str,
@@ -911,7 +970,10 @@ def run_fit_analysis(
     on_error,               # callback(message: str)
     progress_cb=None,       # callback(step: str, detail: str)
     context_skill_path: str = "",  # path to personal SKILL.md; omit for neutral output
+    model: str = "",               # ADR-016: jfa_model setting; blank means the default
 ) -> threading.Thread:
+
+    model = resolve_model(model)
 
     def _p(step, detail="", stage=None):
         if progress_cb:
@@ -968,7 +1030,7 @@ def run_fit_analysis(
             _p("Running fit analysis...", "All agents (single call)", stage="api_call")
             personal_context = _load_context_skill(context_skill_path)
             result = _call_api(client, jd_text, resume_text, company, role,
-                               personal_context=personal_context)
+                               personal_context=personal_context, model=model)
 
             recommendation = (
                 "APPLY" if result["fit_score"] >= 0.75 else
@@ -978,7 +1040,7 @@ def run_fit_analysis(
             _p("Writing fit_analysis.md...", stage="fit_summary")
             md_path = write_fit_analysis_md(
                 folder_path, company, role, job_url, fit_threshold, result,
-                jd_note=jd_note,
+                jd_note=jd_note, model=model,
             )
 
             _p("Generating fit summary...", stage="fit_summary")
@@ -1017,23 +1079,7 @@ def run_fit_analysis(
             on_success(result, output_files)
 
         except Exception as e:
-            if isinstance(e, vault.VaultError):
-                on_error(str(e))
-                return
-            try:
-                import anthropic
-                if isinstance(e, anthropic.AuthenticationError):
-                    on_error("Anthropic rejected the credential retrieved from the agent vault.")
-                    return
-                if isinstance(e, anthropic.RateLimitError):
-                    on_error("Rate limit reached. Wait a moment and try again.")
-                    return
-            except ImportError:
-                pass
-            if isinstance(e, (FileNotFoundError, RuntimeError)):
-                on_error(str(e))
-            else:
-                on_error(f"Unexpected error — {type(e).__name__}: {e}")
+            on_error(_error_message(e, model))
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
