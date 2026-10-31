@@ -10,18 +10,32 @@ from test_resume_sources import ROLE_MAP, item, make_master, make_pool
 RESULT = {"alignment": [{"area": "Cloud", "detail": "x"}], "gaps": [{"area": "K8s", "severity": "minor", "detail": "y"}]}
 
 
+class _Stream:
+    def __init__(self, message):
+        self.message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self.message
+
+
 class Client:
     def __init__(self, payload=None, exc=None, raw=None):
         self.payload, self.exc, self.raw, self.calls = payload, exc, raw, []
         self.messages = self
 
-    def create(self, **kw):
+    def stream(self, **kw):
         self.calls.append(kw)
         if self.exc:
             raise self.exc
         text = self.raw if self.raw is not None else json.dumps(self.payload)
-        return NS(content=[NS(type="thinking", thinking="", signature="s"), NS(type="text", text=text)],
-                  stop_reason="end_turn")
+        return _Stream(NS(content=[NS(type="thinking", thinking="", signature="s"), NS(type="text", text=text)],
+                          stop_reason="end_turn"))
 
 
 def echo(inv):

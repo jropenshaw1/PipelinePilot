@@ -11,15 +11,32 @@ from models import DEFAULT_JFA_MODEL, JFA_MODEL_KEY
 GOOD = {"fit_score": 0.62, "advocate_case": "x", "gaps": [], "alignment": []}
 
 
+class _Stream:
+    def __init__(self, message):
+        self.message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self.message
+
+
 class FakeClient:
     def __init__(self, message):
         self.message = message
         self.calls = []
         self.messages = self
 
-    def create(self, **kwargs):
+    def stream(self, **kwargs):
         self.calls.append(kwargs)
-        return self.message
+        return _Stream(self.message)
+
+    def create(self, **kwargs):  # pragma: no cover - must not be used (ADR-016 streaming)
+        raise AssertionError("non-streaming create() called")
 
 
 def msg(*blocks, stop="end_turn"):
@@ -95,3 +112,10 @@ def test_model_recorded_in_fit_analysis_md(tmp_path):
 
 def test_no_module_level_model_constant():
     assert not hasattr(fae, "MODEL")
+
+
+def test_requests_are_streamed():
+    """The SDK refuses non-streaming requests at this max_tokens (seen in the first live run)."""
+    client = FakeClient(msg(text(json.dumps(GOOD))))
+    call(client)
+    assert len(client.calls) == 1  # went through stream(); create() would raise

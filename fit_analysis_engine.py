@@ -68,6 +68,14 @@ def resolve_model(value) -> str:
     return text or DEFAULT_JFA_MODEL
 
 
+def _create_message(client, **kwargs):
+    """Send one request as a stream and return the final Message. The SDK
+    refuses non-streaming requests whose max_tokens could run past ten
+    minutes, and MAX_TOKENS (thinking plus JSON) is in that range."""
+    with client.messages.stream(**kwargs) as stream:
+        return stream.get_final_message()
+
+
 def _response_text(message) -> str:
     """Text of an API response, selected by block type (thinking blocks may
     come first, ADR-016 Decision 5). A response cut off by max_tokens is
@@ -285,7 +293,8 @@ def _call_api(client, jd_text: str, resume_text: str, company: str, role: str,
     # JFA runs (same resume, different JDs) get cache hits on the stable
     # prefix. Only the final user message (company/role/JD) is processed
     # fresh on runs 2+. 5-minute TTL refreshes on each hit.
-    message = client.messages.create(
+    message = _create_message(
+        client,
         model=model,
         max_tokens=MAX_TOKENS,
         system=[{
@@ -1491,7 +1500,8 @@ def tailor_resume(client, inventory: dict, pool: dict, jd_text: str, result: dic
     system = TAILOR_PROMPT
     if personal_context:
         system += "\n\n---\n\n# PERSONAL CONTEXT\n\n" + personal_context + "\n\n---"
-    message = client.messages.create(
+    message = _create_message(
+        client,
         model=model,
         max_tokens=MAX_TOKENS,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
