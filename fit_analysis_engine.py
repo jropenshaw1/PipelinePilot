@@ -699,6 +699,419 @@ def load_resume_pool(pool_dir, inventory: dict) -> dict:
     return {"items": items, "role_map": role_map, "summary_excluded_roles": excluded}
 
 
+# ─────────────────────────────────────────────
+# Resume tailoring (ADR-015): checks, fallbacks, limits, budget
+# Pure functions over the inventory, the pool and the model's tailoring
+# JSON. Nothing here calls the API or touches files.
+#
+# Tailoring JSON (model output) shape:
+#   {"headline": str, "subtitle": str, "summary_paragraph": str,
+#    "summary_bullets": [{"text", "source_ids", "claim_type"}],
+#    "competencies": [[term, ...] per master competency line, in order],
+#    "roles": [{"role_index": int, "bullets": [{"text", "source_ids", "claim_type"}]}]}
+# Bullets are in priority order (ADR-015 §2).
+# ─────────────────────────────────────────────
+
+_EDGE_PUNCT = ".,;:!?()[]\"'"
+_SENTENCE_END = (".", ";", ":", "?")
+_MAGNITUDE = re.compile(r"\d[MKB]\b")
+BUDGET_WARN_SHARE = 0.97
+
+
+def _tokens(text: str) -> list[tuple[str, bool]]:
+    """(token, sentence_initial) pairs per ADR-015 §3.1."""
+    out, initial = [], True
+    for raw in (text or "").split():
+        tok = raw.strip(_EDGE_PUNCT)
+        if tok:
+            out.append((tok, initial))
+        initial = raw.rstrip("\"')]").endswith(_SENTENCE_END)
+    return out
+
+
+def _norm_number(tok: str) -> str:
+    t = tok.lstrip("~")
+    t = re.sub(r"(?<=\d),(?=\d)", "", t)
+    return t.lower()
+
+
+def _is_named(tok: str, initial: bool) -> bool:
+    if any(c.isdigit() for c in tok):
+        return True
+    return any(c.isupper() for c in tok) and not initial
+
+
+def _term_index(texts) -> tuple[set, set]:
+    """Lower-cased whole terms (plus hyphen-separated parts) and normalized
+    numbers found in the source texts."""
+    terms, numbers = set(), set()
+    for text in texts:
+        for tok, _ in _tokens(text):
+            parts = [tok] + [p for p in tok.split("-") if p]
+            for p in parts:
+                terms.add(p.lower())
+                if any(c.isdigit() for c in p):
+                    numbers.add(_norm_number(p))
+    return terms, numbers
+
+
+def _lexical_problems(text: str, source_texts) -> list[str]:
+    """Numbers and named terms in text that do not trace to the sources."""
+    terms, numbers = _term_index(source_texts)
+    problems = []
+    for tok, initial in _tokens(text):
+        if any(c.isdigit() for c in tok):
+            if _norm_number(tok) not in numbers:
+                problems.append(f"number '{tok}' not in its sources")
+        elif _is_named(tok, initial) and tok.lower() not in terms:
+            problems.append(f"term '{tok}' not in its sources")
+    return problems
+
+
+def _first_word(text: str) -> str:
+    toks = _tokens(text)
+    return toks[0][0].lower() if toks else ""
+
+
+def _same(a: str, b: str) -> bool:
+    return _norm(a) == _norm(b)
+
+
+def _source_table(inventory: dict, pool: dict) -> dict:
+    """source_id -> {"text", "role_index", "kind"} for every citable source."""
+    table = {}
+    for b in inventory["summary_bullets"]:
+        table[b["id"]] = {"text": b["text"], "role_index": None, "kind": "master-summary"}
+    for r in inventory["roles"]:
+        for b in r["bullets"]:
+            table[b["id"]] = {"text": b["text"], "role_index": r["role_index"], "kind": "master"}
+    for it in pool.get("items", []):
+        table[it["item_id"]] = {"text": it["text"], "role_index": it["role_index"], "kind": "pool"}
+    return table
+
+
+def _corpus(inventory: dict, pool: dict) -> list[str]:
+    """Everything a prose field may draw names and numbers from (ADR-015 §3.2)."""
+    texts = [inventory["headline"]["text"], inventory["subtitle"]["text"],
+             inventory["summary_paragraph"]["text"]]
+    texts += [b["text"] for b in inventory["summary_bullets"]]
+    texts += [c["label"] + ": " + " | ".join(c["terms"]) for c in inventory["competencies"]]
+    for r in inventory["roles"]:
+        texts += [r["title"], r["company_line"]] + [b["text"] for b in r["bullets"]]
+    texts += [it["text"] for it in pool.get("items", [])]
+    return texts
+
+
+def _check_bullet(b, allowed, table, role_bullet: bool) -> list[str]:
+    """§3.2 checks for one bullet. allowed(source_id) -> reason or None."""
+    text = (b or {}).get("text") if isinstance(b, dict) else None
+    ids = (b or {}).get("source_ids") if isinstance(b, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return ["empty text"]
+    if not isinstance(ids, list) or not ids:
+        return ["no source_ids"]
+    if len(set(ids)) != len(ids):
+        return ["duplicate source_ids"]
+    problems = []
+    for sid in ids:
+        if sid not in table:
+            problems.append(f"unknown source '{sid}'")
+        else:
+            why = allowed(sid)
+            if why:
+                problems.append(why)
+    if problems:
+        return problems
+    sources = [table[s]["text"] for s in ids]
+    problems += _lexical_problems(text, sources)
+    if role_bullet and _first_word(text) not in {_first_word(s) for s in sources}:
+        problems.append("leading verb differs from its sources")
+    if "—" in text:
+        problems.append("em dash")
+    return problems
+
+
+def _status(text: str, source_texts) -> str:
+    return "verified" if any(_same(text, s) for s in source_texts) else "retuned"
+
+
+def _master_bullet(b: dict) -> dict:
+    return {"text": b["text"], "source_ids": [b["id"]], "status": "verified", "master_id": b["id"]}
+
+
+def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
+    """ADR-015 §3, §4, §5 and Amendment 1 A2. Returns the checked result with
+    every rejection, fallback and revert recorded in result["events"]."""
+    table = _source_table(inventory, pool)
+    corpus = _corpus(inventory, pool)
+    excluded = pool.get("summary_excluded_roles", set())
+    tailored = tailored if isinstance(tailored, dict) else {}
+    events = []
+    res = {"events": events}
+
+    # Headline, subtitle, summary paragraph: pass or revert to master.
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        master = inventory[key]["text"]
+        text = tailored.get(key)
+        if not isinstance(text, str) or not text.strip():
+            res[key] = {"text": master, "status": "verified"}
+            if text is not None:
+                events.append({"field": key, "action": "reverted", "reason": "empty"})
+            continue
+        problems = _lexical_problems(text, corpus) + (["em dash"] if "—" in text else [])
+        if problems:
+            res[key] = {"text": master, "status": "verified"}
+            events.append({"field": key, "action": "reverted", "reason": "; ".join(problems)})
+        else:
+            res[key] = {"text": text.strip(), "status": _status(text, [master])}
+
+    # Summary bullets: any source except roles excluded from the summary (A2).
+    def summary_allowed(sid):
+        ri = table[sid]["role_index"]
+        if ri is not None and ri in excluded:
+            return f"source '{sid}' belongs to a role kept out of the summary"
+        return None
+
+    summary = []
+    for n, b in enumerate(tailored.get("summary_bullets") or []):
+        problems = _check_bullet(b, summary_allowed, table, role_bullet=False)
+        if problems:
+            events.append({"field": f"summary bullet {n}", "action": "dropped", "reason": "; ".join(problems)})
+            continue
+        srcs = [table[s]["text"] for s in b["source_ids"]]
+        summary.append({"text": b["text"].strip(), "source_ids": list(b["source_ids"]),
+                        "status": _status(b["text"], srcs)})
+    if not summary:
+        summary = [_master_bullet(b) for b in inventory["summary_bullets"]]
+        events.append({"field": "summary bullets", "action": "reverted", "reason": "none passed (floor)"})
+    res["summary_bullets"] = summary
+
+    # Competencies: one term list per master line, in order.
+    comp_in = tailored.get("competencies")
+    lines = []
+    if not isinstance(comp_in, list) or len(comp_in) != len(inventory["competencies"]):
+        lines = [{"label": c["label"], "terms": list(c["terms"]), "status": "verified"}
+                 for c in inventory["competencies"]]
+        if comp_in is not None:
+            events.append({"field": "competencies", "action": "reverted",
+                           "reason": "line count differs from the master"})
+    else:
+        for c, terms in zip(inventory["competencies"], comp_in):
+            kept = []
+            for t in terms if isinstance(terms, list) else []:
+                t = t.strip() if isinstance(t, str) else ""
+                problems = _lexical_problems(t, corpus) if t else ["empty"]
+                if problems:
+                    events.append({"field": f"competency '{c['label']}'", "action": "dropped",
+                                   "reason": f"'{t}': " + "; ".join(problems)})
+                else:
+                    kept.append(t)
+            if not kept:
+                lines.append({"label": c["label"], "terms": list(c["terms"]), "status": "verified"})
+                events.append({"field": f"competency '{c['label']}'", "action": "reverted",
+                               "reason": "no terms passed"})
+            else:
+                same = [x.lower() for x in kept] == [x.lower() for x in c["terms"]]
+                lines.append({"label": c["label"], "terms": kept,
+                              "status": "verified" if same else "retuned"})
+    res["competencies"] = lines
+
+    # Role bullets.
+    by_role = {}
+    for r in tailored.get("roles") or []:
+        ri = r.get("role_index") if isinstance(r, dict) else None
+        if not isinstance(ri, int) or not (0 <= ri < len(inventory["roles"])) or ri in by_role:
+            events.append({"field": "roles", "action": "ignored", "reason": f"unknown or repeated role_index {ri!r}"})
+            continue
+        by_role[ri] = r.get("bullets") or []
+
+    roles = []
+    for role in inventory["roles"]:
+        ri = role["role_index"]
+        master_ids = {b["id"]: b for b in role["bullets"]}
+        used = set()
+        placed = set()  # normalized texts already in this role (no line printed twice)
+
+        def role_allowed(sid, ri=ri):
+            if table[sid]["role_index"] != ri:
+                return f"source '{sid}' does not belong to this role"
+            return None
+
+        out = []
+        if ri not in by_role:
+            out = [_master_bullet(b) for b in role["bullets"]]
+            events.append({"field": f"role {ri}", "action": "reverted", "reason": "missing from the response"})
+            roles.append({"role_index": ri, "bullets": out})
+            continue
+        for n, b in enumerate(by_role[ri]):
+            problems = _check_bullet(b, role_allowed, table, role_bullet=True)
+            if not problems:
+                srcs = [table[s]["text"] for s in b["source_ids"]]
+                status = _status(b["text"], srcs)
+                mid = next((s for s in b["source_ids"]
+                            if s in master_ids and _same(b["text"], master_ids[s]["text"])), None)
+                if mid and mid in used:
+                    events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
+                                   "reason": f"master bullet {mid} already used"})
+                    continue
+                if _norm(b["text"]).lower() in placed:
+                    events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
+                                   "reason": "same text as a bullet already in this role"})
+                    continue
+                if mid is None:
+                    # a pool item worded exactly like a master bullet of this role counts as that bullet
+                    mid = next((m for m, mb in master_ids.items() if _same(b["text"], mb["text"])), None)
+                    if mid in used:
+                        events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
+                                       "reason": f"master bullet {mid} already used"})
+                        continue
+                if mid:
+                    used.add(mid)
+                placed.add(_norm(b["text"]).lower())
+                out.append({"text": b["text"].strip(), "source_ids": list(b["source_ids"]),
+                            "status": status, "master_id": mid})
+                continue
+            ids = b.get("source_ids") if isinstance(b, dict) and isinstance(b.get("source_ids"), list) else []
+            repl = next((s for s in ids if s in master_ids and s not in used), None)
+            if repl and _norm(master_ids[repl]["text"]).lower() not in placed:
+                used.add(repl)
+                placed.add(_norm(master_ids[repl]["text"]).lower())
+                out.append(_master_bullet(master_ids[repl]))
+                events.append({"field": f"role {ri} bullet {n}", "action": "replaced",
+                               "reason": "; ".join(problems) + f" (master {repl} used instead)"})
+            else:
+                events.append({"field": f"role {ri} bullet {n}", "action": "dropped", "reason": "; ".join(problems)})
+        if not out:
+            out = [_master_bullet(b) for b in role["bullets"]]
+            events.append({"field": f"role {ri}", "action": "reverted", "reason": "no bullets passed (floor)"})
+        roles.append({"role_index": ri, "bullets": out})
+    res["roles"] = roles
+    return res
+
+
+def _bullet_chars(bullets) -> int:
+    return sum(len(b["text"]) for b in bullets)
+
+
+def apply_role_limits(inventory: dict, pool: dict, res: dict) -> dict:
+    """Amendment 1: A1 (count cap per role), then A3 (character ceiling for
+    roles kept out of the summary). Mutates and returns res."""
+    excluded = pool.get("summary_excluded_roles", set())
+    events = res["events"]
+    for role, master in zip(res["roles"], inventory["roles"]):
+        ri, cap = role["role_index"], len(master["bullets"])
+        while len(role["bullets"]) > cap:
+            gone = role["bullets"].pop()
+            events.append({"field": f"role {ri}", "action": "dropped",
+                           "reason": f"over the {cap}-bullet cap (A1): {gone['text'][:60]}"})
+        if ri not in excluded:
+            continue
+        ceiling = _bullet_chars(master["bullets"])
+        while _bullet_chars(role["bullets"]) > ceiling:
+            swapped = [i for i, b in enumerate(role["bullets"]) if not b.get("master_id")]
+            if not swapped:
+                role["bullets"] = [_master_bullet(b) for b in master["bullets"]]
+                events.append({"field": f"role {ri}", "action": "reverted",
+                               "reason": "over its master character total (A3)"})
+                break
+            i = swapped[-1]
+            used = {b.get("master_id") for b in role["bullets"]}
+            unused = next((b for b in master["bullets"] if b["id"] not in used), None)
+            if unused:
+                events.append({"field": f"role {ri}", "action": "replaced",
+                               "reason": f"over its master character total (A3); master {unused['id']} restored"})
+                role["bullets"][i] = _master_bullet(unused)
+            elif len(role["bullets"]) > 1:
+                role["bullets"].pop(i)
+                events.append({"field": f"role {ri}", "action": "dropped",
+                               "reason": "over its master character total (A3)"})
+            else:
+                role["bullets"] = [_master_bullet(b) for b in master["bullets"]]
+                events.append({"field": f"role {ri}", "action": "reverted",
+                               "reason": "over its master character total (A3)"})
+                break
+    return res
+
+
+def _comp_line(c: dict) -> str:
+    return c["label"] + ": " + " | ".join(c["terms"])
+
+
+def _editable_chars(headline, subtitle, paragraph, summary, comps, roles) -> int:
+    return (len(headline) + len(subtitle) + len(paragraph)
+            + sum(len(b["text"]) for b in summary)
+            + sum(len(_comp_line(c)) for c in comps)
+            + sum(_bullet_chars(r["bullets"]) for r in roles))
+
+
+def apply_budget(inventory: dict, res: dict) -> dict:
+    """ADR-015 §6. Mutates res; sets res["budget"]. If nothing fits,
+    res["budget"]["fits"] is False and the run must publish master-copy."""
+    inv = inventory
+    limit = _editable_chars(inv["headline"]["text"], inv["subtitle"]["text"],
+                            inv["summary_paragraph"]["text"], inv["summary_bullets"],
+                            inv["competencies"], inv["roles"])
+    events = res["events"]
+
+    def used():
+        return _editable_chars(res["headline"]["text"], res["subtitle"]["text"],
+                               res["summary_paragraph"]["text"], res["summary_bullets"],
+                               res["competencies"], res["roles"])
+
+    steps = []
+    if used() > limit and res["summary_paragraph"]["text"] != inv["summary_paragraph"]["text"]:
+        res["summary_paragraph"] = {"text": inv["summary_paragraph"]["text"], "status": "verified"}
+        steps.append("summary paragraph reverted to master")
+    if used() > limit and any(c["status"] != "verified" for c in res["competencies"]):
+        res["competencies"] = [{"label": c["label"], "terms": list(c["terms"]), "status": "verified"}
+                               for c in inv["competencies"]]
+        steps.append("competency lines reverted to master")
+    while used() > limit:
+        multi = [r for r in res["roles"] if len(r["bullets"]) > 1]
+        if not multi:
+            break
+        top = max(len(r["bullets"]) for r in multi)
+        role = max((r for r in multi if len(r["bullets"]) == top), key=lambda r: r["role_index"])
+        gone = role["bullets"].pop()
+        steps.append(f"role {role['role_index']}: dropped '{gone['text'][:60]}'")
+    while used() > limit and len(res["summary_bullets"]) > 1:
+        gone = res["summary_bullets"].pop()
+        steps.append(f"summary: dropped '{gone['text'][:60]}'")
+    for s in steps:
+        events.append({"field": "budget", "action": "reduced", "reason": s})
+    total = used()
+    res["budget"] = {"used": total, "limit": limit, "share": total / limit if limit else 0.0,
+                     "fits": total <= limit,
+                     "warn": limit > 0 and total / limit > BUDGET_WARN_SHARE}
+    return res
+
+
+def tailoring_state(res: dict) -> str:
+    """tailored (no fallbacks or drops) or partial. master-copy is decided by
+    the orchestrator (load failure, API failure, budget failure)."""
+    return "partial" if res["events"] else "tailored"
+
+
+def retuned_items(res: dict) -> list[dict]:
+    """Every published item that is not a verbatim source (ADR-015 §4)."""
+    items = []
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        if res[key]["status"] == "retuned":
+            items.append({"field": key, "text": res[key]["text"], "source_ids": []})
+    for n, b in enumerate(res["summary_bullets"]):
+        if b["status"] == "retuned":
+            items.append({"field": f"summary bullet {n}", "text": b["text"], "source_ids": b["source_ids"]})
+    for c in res["competencies"]:
+        if c["status"] == "retuned":
+            items.append({"field": f"competency '{c['label']}'", "text": _comp_line(c), "source_ids": []})
+    for r in res["roles"]:
+        for n, b in enumerate(r["bullets"]):
+            if b["status"] == "retuned":
+                items.append({"field": f"role {r['role_index']} bullet {n}", "text": b["text"],
+                              "source_ids": b["source_ids"]})
+    return items
+
+
 def generate_tailored_resume(result: dict, company: str, role: str,
                               folder_path: Path, resume_path: str) -> Path:
     """
