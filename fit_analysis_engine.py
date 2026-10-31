@@ -1,13 +1,15 @@
 # fit_analysis_engine.py — PipelinePilot fit analysis engine
 #
 # Mirrors the Streamlit fit_analysis.py approach:
-#   - Single Claude API call returns all artifacts in one JSON
-#   - Tailored resume = master resume copy + tailored summary prepended
+#   - One Claude API call returns the analysis, cover letter and interview guide
+#   - A second call tailors the resume from the master and the approved pool;
+#     Python checks every line against its sources (ADR-015)
 #   - Same document styling as the Streamlit output
 #
 # Runs in a background thread. Never blocks the UI.
 # Writes to opportunity folder:
 #   - fit_analysis.md              (YAML → SQLite index)
+#   - ResumeTrace_{Company}_{Role}.md  (ADR-015 review trace, with the resume)
 #   - FitAnalysis_{Company}.docx
 #   - CoverLetter_{Company}_{Role}.docx
 #   - Resume_{Company}_{Role}.docx
@@ -93,7 +95,7 @@ ANALYSIS_STAGES = [
     ("api_call",        "AI Analysis",      "All agents (single call)"),
     ("fit_summary",     "Fit Summary",      "Score + alignment report"),
     ("cover_letter",    "Cover Letter",     "Personalized letter"),
-    ("resume",          "Tailored Resume",  "ATS-ready copy"),
+    ("resume",          "Tailored Resume",  "Tailor, check, publish"),
     ("interview_guide", "Interview Guide",  "Prep questions + strategies"),
 ]
 
@@ -1396,17 +1398,103 @@ def resume_pair_problem(folder, resume_name: str, trace_name: str) -> str | None
     return None
 
 
-def generate_tailored_resume(result: dict, company: str, role: str,
-                              folder_path: Path, resume_path: str) -> Path:
-    """
-    Copy master resume as-is. The master resume (V18+) already contains a
-    tailored professional summary — no prepend block needed or wanted.
-    The resume_highlights field from the API result is surfaced in the
-    FitAnalysis doc instead, keeping the resume clean.
-    """
-    # Output is always .docx for ATS compatibility.
-    # If the configured resume_path is .md (API input master), resolve the
-    # .docx sibling at the same location for the copy source.
+TAILOR_PROMPT = """You tailor a candidate's master resume to one job description by selecting,
+ordering and lightly rewording material that already exists. You never add facts.
+
+Sources. Every bullet you return cites the IDs of the sources it is built from:
+master bullets (IDs like M:2:1 for role 2, M:S:0 for summary bullets) and approved
+pool items (their item_id). A role bullet may cite only that role's sources. A summary
+bullet may cite any source except those marked as kept out of the summary.
+
+Rules (a Python validator enforces them; a bullet that breaks one is replaced or dropped):
+- Every number in a bullet appears in its cited sources, written the same way.
+- Every capitalized term or tool name appears in its cited sources.
+- A role bullet starts with the same first word as one of its sources.
+- No em dashes.
+- A role may not have more bullets than it has on the master. Pool items replace bullets; they never add.
+- Roles marked "minimized" may not take more characters than they do on the master.
+- Prefer a source's exact text when it already fits the job description. Reword only to move
+  the job description's vocabulary into a bullet whose meaning stays the same.
+- Keep the total length of the resume no longer than the master: when one bullet grows,
+  shorten or swap another. Text beyond the budget is cut automatically, lowest priority first.
+
+Headline, subtitle and summary paragraph: rewrite toward the job description using only names,
+tools and numbers that appear somewhere in the master or the pool. Competencies: return one list
+of terms per master competency line, in the master's order; you may reorder, drop, or add terms
+that appear in the master or the pool.
+
+Return bullets in priority order (most relevant first). Respond with a JSON object and nothing
+else, with exactly this structure:
+{
+  "headline": "...",
+  "subtitle": "...",
+  "summary_paragraph": "...",
+  "summary_bullets": [{"text": "...", "source_ids": ["M:S:0"], "claim_type": "direct-restatement"}],
+  "competencies": [["term", "term"], ["term"]],
+  "roles": [{"role_index": 0, "bullets": [{"text": "...", "source_ids": ["M:0:1"], "claim_type": "jd-tailored-language"}]}]
+}
+claim_type is one of: direct-restatement, compressed-synthesis, jd-tailored-language,
+metric-forward, role-summary."""
+
+
+def _tailoring_request(inventory: dict, pool: dict, jd_text: str, result: dict) -> str:
+    excluded = pool.get("summary_excluded_roles", set())
+    roles = []
+    for r in inventory["roles"]:
+        ri = r["role_index"]
+        roles.append({
+            "role_index": ri, "title": r["title"], "company_line": r["company_line"],
+            "max_bullets": len(r["bullets"]),
+            "master_characters": _bullet_chars(r["bullets"]),
+            "minimized": ri in excluded,
+            "master_bullets": [{"id": b["id"], "text": b["text"]} for b in r["bullets"]],
+            "pool_items": [{"id": it["item_id"], "text": it["text"]}
+                           for it in pool.get("items", []) if it["role_index"] == ri],
+        })
+    payload = {
+        "headline": inventory["headline"]["text"],
+        "subtitle": inventory["subtitle"]["text"],
+        "summary_paragraph": inventory["summary_paragraph"]["text"],
+        "summary_bullets": [{"id": b["id"], "text": b["text"]} for b in inventory["summary_bullets"]],
+        "competencies": [{"label": c["label"], "terms": c["terms"]} for c in inventory["competencies"]],
+        "roles": roles,
+        "summary_only_pool_items": [{"id": it["item_id"], "text": it["text"]}
+                                    for it in pool.get("items", []) if it["role_index"] is None],
+        "kept_out_of_summary_roles": sorted(excluded),
+    }
+    analysis = {"alignment": result.get("alignment", []), "gaps": result.get("gaps", [])}
+    return ("MASTER RESUME AND POOL (JSON):\n" + json.dumps(payload, ensure_ascii=False, indent=1)
+            + "\n\nFIT ANALYSIS (alignment and gaps):\n" + json.dumps(analysis, ensure_ascii=False)
+            + "\n\nJOB DESCRIPTION:\n" + jd_text)
+
+
+def tailor_resume(client, inventory: dict, pool: dict, jd_text: str, result: dict,
+                  personal_context: str = "", *, model: str) -> dict:
+    """The ADR-015 tailoring call. Returns the model's tailoring JSON (unchecked)."""
+    system = TAILOR_PROMPT
+    if personal_context:
+        system += "\n\n---\n\n# PERSONAL CONTEXT\n\n" + personal_context + "\n\n---"
+    message = client.messages.create(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": _tailoring_request(inventory, pool, jd_text, result)}],
+    )
+    raw = _response_text(message).strip()
+    raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"```$", "", raw.strip())
+    try:
+        data = json.loads(raw.strip())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"tailoring response was not valid JSON: {e}")
+    if not isinstance(data, dict):
+        raise RuntimeError("tailoring response was not a JSON object")
+    return data
+
+
+def _master_docx_path(resume_path: str) -> Path:
+    # Output is always .docx for ATS compatibility. If the configured
+    # resume_path is .md (API input master), the .docx sibling is the source.
     src = Path(resume_path)
     if src.suffix.lower() != ".docx":
         docx_sibling = src.with_suffix(".docx")
@@ -1417,9 +1505,76 @@ def generate_tailored_resume(result: dict, company: str, role: str,
                 "or set Resume Path directly to the .docx file."
             )
         src = docx_sibling
-    out = folder_path / f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
-    shutil.copy2(str(src), str(out))
-    return out
+    return src
+
+
+def generate_tailored_resume(result: dict, company: str, role: str, folder_path: Path,
+                             resume_path: str, *, client, model: str, jd_text: str,
+                             personal_context: str = "", resume_pool_path: str = "") -> dict:
+    """ADR-015: tailor, check, render and publish the resume with its trace.
+    Returns {"resume", "trace", "state", "retuned", "outcome", "message"}.
+    Any tailoring failure publishes a master copy with a trace naming why."""
+    folder_path = Path(folder_path)
+    master = _master_docx_path(resume_path)
+    resume_name = f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
+    trace_name = f"ResumeTrace_{_sanitize(company)}_{_sanitize(role)}.md"
+    notes = []
+    recovered = recover_resume_publication(folder_path)
+    if recovered:
+        notes.append(recovered)
+
+    run_id = new_run_id()
+    resume_new = folder_path / (resume_name + ".new")
+    trace_new = folder_path / (trace_name + ".new")
+    state, retuned, reason = "master-copy", 0, ""
+    inv = pool = res = None
+    try:
+        inv = parse_master_resume(master)
+        pool = (load_resume_pool(resume_pool_path, inv) if (resume_pool_path or "").strip()
+                else {"items": [], "role_map": {}, "summary_excluded_roles": set()})
+        tailored = tailor_resume(client, inv, pool, jd_text, result, personal_context, model=model)
+        res = validate_tailoring(inv, pool, tailored)
+        apply_role_limits(inv, pool, res)
+        apply_budget(inv, res)
+        if not res["budget"]["fits"]:
+            raise RuntimeError("tailored resume does not fit the length budget")
+        state = tailoring_state(res)
+        retuned = len(retuned_items(res))
+        render_tailored_resume(master, inv, res, resume_new, run_id, state)
+        write_resume_trace(trace_new, run_id=run_id, state=state, company=company, role=role,
+                           model=model, inventory=inv, pool=pool, res=res)
+    except Exception as e:
+        state, retuned = "master-copy", 0
+        if _is_model_not_found(e):
+            reason = model_unavailable_message(model)
+        elif isinstance(e, TailoringLoadError):
+            reason = f"tailoring source not loaded: {e}"
+        else:
+            reason = f"{type(e).__name__}: {e}"
+        try:
+            master_copy_resume(master, resume_new, run_id)
+            write_resume_trace(trace_new, run_id=run_id, state=state, company=company, role=role,
+                               model=model, inventory=None, pool=None, res=None, reason=reason)
+        except Exception as e2:
+            for p in (resume_new, trace_new):
+                _safe_unlink(p)
+            msg = f"master-copy; publication-failed, previous resume kept ({reason}; {e2})"
+            return {"resume": None, "trace": None, "state": state, "retuned": 0,
+                    "outcome": "publication-failed", "message": " | ".join(notes + [msg])}
+
+    pub = publish_resume_pair(folder_path, resume_name, trace_name, resume_new, trace_new, run_id)
+    if state == "master-copy":
+        msg = f"master-copy ({reason})"
+    else:
+        msg = f"{state}: {retuned} retuned item{'s' if retuned != 1 else ''} need review"
+    msg += f"; {pub['outcome']}"
+    if pub["detail"]:
+        msg += f" ({pub['detail']})"
+    published = pub["outcome"] == "published"
+    return {"resume": folder_path / resume_name if published else None,
+            "trace": folder_path / trace_name if published else None,
+            "state": state, "retuned": retuned, "outcome": pub["outcome"],
+            "message": " | ".join(notes + [msg])}
 
 
 def generate_interview_guide(result: dict, company: str, role: str, folder_path: Path) -> Path:
@@ -1668,6 +1823,7 @@ def run_fit_analysis(
     progress_cb=None,       # callback(step: str, detail: str)
     context_skill_path: str = "",  # path to personal SKILL.md; omit for neutral output
     model: str = "",               # ADR-016: jfa_model setting; blank means the default
+    resume_pool_path: str = "",    # ADR-015: approved resume pool folder; blank = master only
 ) -> threading.Thread:
 
     model = resolve_model(model)
@@ -1746,10 +1902,13 @@ def run_fit_analysis(
             _p("Generating cover letter...", stage="cover_letter")
             cl_path = generate_cover_letter(result, company, role, folder_path)
 
-            _p("Generating tailored resume...", stage="resume")
-            res_path = generate_tailored_resume(
-                result, company, role, folder_path, resume_path
+            _p("Tailoring resume...", "Second call: select, check and publish", stage="resume")
+            tailoring = generate_tailored_resume(
+                result, company, role, folder_path, resume_path,
+                client=client, model=model, jd_text=jd_text,
+                personal_context=personal_context, resume_pool_path=resume_pool_path,
             )
+            _p("Tailored resume", tailoring["message"], stage="resume")
 
             _p("Generating interview prep guide...", stage="interview_guide")
             ip_path = generate_interview_guide(result, company, role, folder_path)
@@ -1768,8 +1927,10 @@ def run_fit_analysis(
                 updates["status"] = "Analyzing"
             database.update_opportunity(db_path, folder_name, updates)
 
-            output_files = [md_path, fa_path, cl_path, res_path, ip_path]
-            done = f"{result['fit_score']:.0%} — {recommendation}"
+            output_files = [p for p in (md_path, fa_path, cl_path, tailoring["resume"],
+                                        tailoring["trace"], ip_path) if p]
+            result["resume_tailoring"] = tailoring["message"]
+            done = f"{result['fit_score']:.0%} — {recommendation} | Resume: {tailoring['message']}"
             if jd_note:
                 done += f" | {jd_note}"
             _p("Complete.", done, stage="complete")
