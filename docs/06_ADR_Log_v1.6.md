@@ -15,6 +15,7 @@
 - **v1.5** (October 30, 2026) — ADR-015 (Traceable Resume Tailoring), with Amendment 1 (Role Prominence)
 - **v1.6** (October 30, 2026) — ADR-016 (JFA Model as a Setting)
 - **v1.6, amended** (October 31, 2026) — ADR-015 Amendment 2 (Per-Paragraph Length Capacity) and Amendment 3 (The Job Description Is Never Truncated)
+- **v1.6, amended** (November 1, 2026) — ADR-015 Amendment 4 D1 (Competency Terms Are Whole Master Phrases); Amendment 2 implementation-review fixes recorded in the ADR-015 Implementation Notes
 
 ---
 
@@ -733,7 +734,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1) and October 31, 2026 (Amendments 2 and 3). Implemented October 30–31, 2026; see Implementation Notes.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1), October 31, 2026 (Amendments 2 and 3) and November 1, 2026 (Amendment 4, D1). Implemented October 30–31, 2026; see Implementation Notes.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -975,12 +976,34 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 - Input tokens rise for long postings only.
 - Tests: a JD of 40,001 characters raises `InputLimitError` naming 40,001 and 40,000 with the manual-assessment instruction; a JD of exactly 40,000 and one of 21,474 pass unchanged; the resume cap raises `InputLimitError`; a full run with a 40,001-character JD makes no vault call, no analysis or tailoring call, reports one error, and leaves every existing file in the folder byte-identical with unchanged modification times; a successful mocked run passes a JD identical to the loaded file text to both the analysis call and the tailoring call; `fit_analysis.md` has no Input warning line. A test docstring states that the message format (the phrase "never truncated", the actual size and the limit) is asserted so boundary regressions are traceable. Rev 2 tests are implemented and passing; the vault-order assertion and the success-path equality test are new in rev 3.
 
+### Amendment 4: Competency Terms Are Whole Master Phrases (D1)
+
+**Status:** D1 accepted (Jonathan Openshaw, November 1, 2026), pending his final call on the implementation at the push gate. Review gate: rev 3 reviewed by Gee and Lexi (APPROVE_WITH_CHANGES) and Copi (REJECT, on D2 only); D1 corrections from round 3 applied. Implementation review (code at `f02a746`): Gee and Lexi APPROVE_WITH_CHANGES, Copi APPROVE; fixes in `bf202de` and this documentation change. D2 (sentence-initial words) and D3 (validation) are not part of this amendment; they remain under review and are recorded here when accepted.
+**Changes:** ADR-015 §3.2 for competency terms only. The token check (§3.1) still applies to every other field.
+
+**Context.** §3.1 exempts sentence-initial tokens from the named-term check, and every competency term is checked on its own, so the first token of every term was exempt. An unsourced one-word tool (`Terraform`, `Kubernetes`) passed and published (README T1). A competency test passed only because the old §6 budget reverted its line; Amendment 2 removed that budget and the test failed.
+
+**Decision (D1, as built).**
+- **Corpus.** Master texts, each kept separate: headline, subtitle, summary paragraph, each summary bullet, each competency term, each role title, each role bullet. Not company lines, competency labels or pool items.
+- **Tokens.** Split on whitespace; strip leading `(` `"` `'` `[` and trailing `.` `,` `;` `:` `!` `?` `)` `"` `'` `]`. A leading `.` is kept (`.NET`). A word made only of stripped punctuation leaves no token, and the next token counts as leading-stripped, so no phrase runs across it.
+- **Match.** A term passes when it is one of the owner's own competency terms (compared after collapsing whitespace), or when its tokens equal a run of consecutive tokens in one master text in which only the first token may have lost leading punctuation and only the last trailing punctuation. A one-token term with a capital letter must match case included; other terms match case-insensitively.
+- **Rejected outright.** A term containing `|` (the competency separator), a term whose own tokens have punctuation inside them (`AWS, Azure`), and an empty or non-string term.
+- **Failures.** Duplicates (case-insensitive, after cleaning) are dropped first, then the phrase and case check runs. A one-token term that fails only on case is dropped. Any other failure, or a mix, reverts the whole line to its master terms. If no terms remain, the line reverts. Every drop and revert makes the run `partial`.
+- **Publication.** A passing term is published cleaned: the owner's exact term, or its tokens joined by single spaces.
+- **Status.** A competency line is `verified` only when its terms equal the master terms exactly; the final checks enforce this.
+
+**Accepted residual risks.** A phrase can be lifted out of its master context (README T15). Case-insensitive matching can change a word's capitalization (README T16).
+
+**Alternatives considered.** Token-level matching (rev 1) and word-character boundaries (rev 2) were rejected in review: the first passes words found in unrelated places, the second lets `Go` match inside `go-to-market` and `R` inside `R&D`. Reverting a line for edge punctuation was rejected for publishing the cleaned term (Jonathan, November 1, 2026).
+
 ### Implementation Notes (ADR-015)
 
 Implemented October 30–31, 2026: `5ceb44d` (master parser and pool loader), `0069a71` (checks, fallbacks, role limits and the §6 budget), `ceec44e` (render, trace, recoverable publication), `643e0f7` (tailoring call and run wiring), `af451df` (Resume Pool Folder setting; startup check for interrupted or mismatched pairs), `79f18d2` (trace location), then Amendment 3 (`5a1e8ed`, `6b3e7a3`) and Amendment 2 (`1e80b15`). The decision was built as written, as changed by Amendments 1 to 3, with this difference:
 
 - **Trace location.** The trace is written to `_review/TRACE_DO-NOT-UPLOAD_{Company}_{Role}.md` inside the opportunity folder, not `ResumeTrace_{Company}_{Role}.md` beside the resume, so it cannot be picked up and uploaded in place of the resume. The §5.1 publication contract applies to it unchanged (prepared as `.new`, validated, replaced as a pair with the resume, rolled back or forward from the journal).
 - **Documentation:** Data Dictionary v1.3 (§3 trace artifact, §7 `resume_pool_path`), README and CHANGELOG describe the implemented behavior.
+- **Amendment 2 code review (November 1, 2026).** Fixes F1 to F10 from the round-2 review: `2d75585` (exact source text, combined length step, final invariants, structure guards), `6b45c7e` (summary duplicates), `2c14b43` (tests), `d26fcf0` (trace growth, master length in the prompt), `5e02009` (README assurance statement and known limits). Capacity and the A3 ceiling run in one loop per role, `_reduce_role()`, called from `apply_capacity()`; an A3 step restores the replaced bullet's own cited master first, as the capacity fallback does.
+- **Amendment 4 D1** in `f02a746`; implementation-review fixes in `bf202de` (a line equal to an own-group master apart from case and spacing is that master, so a capacity restore cannot publish it twice; `|` in a competency term; cleaned terms; role order checked before the count cap; `excluded_roles` required; verified competency lines checked) and in this documentation change.
 
 ---
 
