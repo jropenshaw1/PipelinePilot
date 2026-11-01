@@ -1,4 +1,4 @@
-"""ADR-015 §3 to §6 and Amendment 1 (A1 to A3): checks, fallbacks, limits, budget.
+"""ADR-015 §3 to §5, Amendment 1 (A1 to A3) and Amendment 2 (length capacity): checks, fallbacks, limits.
 Pure functions; the inventory is built by hand (synthetic data only)."""
 import copy
 
@@ -61,7 +61,7 @@ def run(tailored, excluded=frozenset()):
     inv, pl = inventory(), pool(excluded)
     res = fae.validate_tailoring(inv, pl, tailored)
     fae.apply_role_limits(inv, pl, res)
-    fae.apply_budget(inv, res)
+    fae.apply_capacity(inv, res)
     return res
 
 
@@ -99,7 +99,7 @@ def test_master_echo_is_tailored_and_all_verified():
     res = run(master_echo(inventory()))
     assert fae.tailoring_state(res) == "tailored"
     assert fae.retuned_items(res) == []
-    assert res["budget"]["fits"] and res["budget"]["share"] == 1.0
+    assert res["budget"]["reverts"] == []
 
 
 def test_light_retune_passes_and_is_marked_retuned():
@@ -152,7 +152,7 @@ def test_role_bullet_failures_fall_back_to_master(bullet, reason):
 def test_pool_item_swaps_into_its_role():
     t = master_echo(inventory())
     t["roles"][0]["bullets"][0] = {"text": "Founded the CMDB across ~2,000 servers.", "source_ids": ["p-cmdb"]}
-    res = run(t)  # replaces the longer M:0:0, so the budget still fits
+    res = run(t)  # within the capacity of the slot it pairs with
     assert res["roles"][0]["bullets"][0]["status"] == "verified"
     assert fae.tailoring_state(res) == "tailored"
 
@@ -231,7 +231,9 @@ def test_prose_field_retune_drawing_on_corpus_passes():
 
 def test_competency_term_dropped_and_line_count_mismatch():
     t = master_echo(inventory())
-    t["competencies"][0] = ["Strategy", "Terraform", "Team Building"]
+    # "Terraform" alone is sentence-initial and so not treated as a named term (§3.1);
+    # before Amendment 2 this test passed only because the §6 budget reverted the line.
+    t["competencies"][0] = ["Strategy", "Cloud Terraform", "Team Building"]
     res = run(t)
     assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
     t["competencies"] = [["Strategy"]]
@@ -295,44 +297,173 @@ def test_a3_does_not_apply_to_unflagged_role():
     t = master_echo(inventory())
     t["roles"][1]["bullets"][1] = {"text": "Led a long and detailed CRM implementation across three offices with 50 sales reps.",
                                    "source_ids": ["p-long"]}
-    res = run(t)  # role 1 not excluded; only the overall budget applies
+    res = run(t)  # role 1 not excluded; only length capacity applies
     assert not any("A3" in e["reason"] for e in res["events"])
 
 
-# ── §6 budget ──
+# ── Amendment 2: length capacity ──
 
-def test_budget_reverts_paragraph_first():
+def M(i, n):
+    """A master bullet of exactly n characters."""
+    return {"id": i, "index": 0, "text": (i + " " + "w" * n)[:n]}
+
+
+def T(n, sources, master_id=None, ch="t"):
+    """A tailored bullet of exactly n characters (not master text)."""
+    return {"text": ch * n, "source_ids": list(sources), "status": "retuned", "master_id": master_id}
+
+
+def reduce(bullets, masters, use_sources=True):
+    caps = {m["id"]: fae.slot_capacity(len(m["text"])) for m in masters}
+    events, reverts = [], []
+    pairs = fae._reduce_group("role 0", bullets, masters, caps, events, reverts, use_sources)
+    assert all(len(bullets[i]["text"]) <= caps[sid] for i, sid in pairs)
+    return events, reverts
+
+
+def test_capacity_rule():
+    assert fae.slot_capacity(38, "headline") == 38 and fae.slot_capacity(27, "subtitle") == 27
+    assert fae.slot_capacity(50) == 92        # slack on a one-line paragraph
+    assert fae.slot_capacity(111) == 111      # a full line has no slack
+    assert fae.slot_capacity(112) == 184 and fae.slot_capacity(180) == 184
+    assert fae.slot_capacity(280) == 280      # 92 x 3 = 276 < 280
+    caps = [fae.slot_capacity(n) for n in range(0, 1200)]
+    assert all(a <= b for a, b in zip(caps, caps[1:])) and all(c >= n for n, c in enumerate(caps))
+
+
+def test_master_echo_has_zero_reverts_and_reports_full_slots():
+    res = run(master_echo(inventory()))
+    assert res["budget"]["reverts"] == [] and fae.tailoring_state(res) == "tailored"
+    assert {x["slot"] for x in res["budget"]["full"]} >= {"headline", "subtitle"}
+
+
+@pytest.mark.parametrize("key, longer", [
+    ("headline", "Technology Leader | Platforms and Cost | FinOps"),
+    ("subtitle", "Cloud | FinOps | Operations | Budgeting"),
+])
+def test_headline_or_subtitle_over_capacity_reverts_alone(key, longer):
     t = master_echo(inventory())
-    t["roles"][0]["bullets"][1] = {"text": "Founded the CMDB across ~2,000 servers.", "source_ids": ["p-cmdb"]}
-    t["summary_paragraph"] = "Leader who builds reliable platforms at Example Corp for FinOps, Cloud and Operations teams."
+    t[key] = longer
+    t["roles"][0]["bullets"][0] = {"text": "Built an AWS platform team of 12 engineers.", "source_ids": ["M:0:0"]}
     res = run(t)
-    assert res["budget"]["fits"]
-    assert res["summary_paragraph"]["text"] == inventory()["summary_paragraph"]["text"]
-    assert any(e["reason"] == "summary paragraph reverted to master" for e in res["events"])
+    assert res[key]["text"] == inventory()[key]["text"]
+    assert [r["field"] for r in res["budget"]["reverts"]] == [key]
+    assert res["roles"][0]["bullets"][0]["text"] == "Built an AWS platform team of 12 engineers."
+    assert fae.tailoring_state(res) == "partial"
 
 
-def test_budget_drops_role_bullets_but_never_below_one():
+def test_bullet_within_capacity_passes_untouched():
+    t = master_echo(inventory())
+    t["roles"][0]["bullets"][0] = {"text": "Built an AWS platform team of 12 engineers.", "source_ids": ["M:0:0"]}
+    res = run(t)
+    assert res["roles"][0]["bullets"][0]["status"] == "retuned" and res["budget"]["reverts"] == []
+
+
+def test_reordering_within_a_role_passes():
+    t = master_echo(inventory())
+    t["roles"][0]["bullets"].reverse()
+    res = run(t)
+    assert res["budget"]["reverts"] == [] and fae.tailoring_state(res) == "tailored"
+
+
+def test_group_with_fewer_bullets_pairs_with_the_largest_capacities():
+    masters = [M("M:0:0", 180), M("M:0:1", 90)]
+    caps = {m["id"]: fae.slot_capacity(len(m["text"])) for m in masters}
+    assert fae._pair_group([T(150, ["M:0:1"])], masters, caps) == [(0, "M:0:0")]
+
+
+def test_bullet_over_capacity_reverts_alone_and_role_keeps_its_tailoring():
     inv = inventory()
-    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
-    res["roles"][0]["bullets"][0]["text"] += " x" * 200  # force overflow without checks
-    fae.apply_budget(inv, res)
-    assert all(len(r["bullets"]) >= 1 for r in res["roles"])
-    assert len(res["summary_bullets"]) >= 1
+    t = master_echo(inv)
+    t["roles"][0]["bullets"][0] = {"text": "Built an AWS platform team of 12 engineers.", "source_ids": ["M:0:0"]}
+    res = fae.validate_tailoring(inv, pool(), t)
+    b = res["roles"][0]["bullets"][1]
+    b.update(text=b["text"] + " x" * 60, status="retuned", master_id=None)  # bypasses the checks
+    fae.apply_capacity(inv, res)
+    assert res["roles"][0]["bullets"][0]["text"] == "Built an AWS platform team of 12 engineers."
+    assert res["roles"][0]["bullets"][1] == fae._master_bullet(inv["roles"][0]["bullets"][1])
+    assert res["roles"][0]["bullets"][1]["status"] == "verified"
+    assert len(res["budget"]["reverts"]) == 1 and fae.tailoring_state(res) == "partial"
 
 
-def test_budget_failure_reports_not_fitting():
+def test_round2_counterexample_reverts_only_the_long_bullet():
+    """Gee round 2: capacities 184 and 92, tailored 130 and 220."""
+    masters = [M("M:0:0", 180), M("M:0:1", 90)]
+    bullets = [T(130, ["M:0:0"]), T(220, ["M:0:1"], ch="u")]
+    events, reverts = reduce(bullets, masters)
+    assert len(reverts) == 1 and reverts[0]["master_id"] == "M:0:1"
+    assert len(bullets[0]["text"]) == 130 and bullets[1]["text"] == masters[1]["text"]
+    assert len(bullets) == 2
+
+
+def test_selected_bullet_within_its_paired_capacity_records_zero_overflow():
+    """Gee round 3: masters [280, 180, 90], tailored [200, 190, 180] with 180 fixed."""
+    masters = [M("M:0:0", 280), M("M:0:1", 180), M("M:0:2", 90)]
+    fixed = fae._master_bullet(masters[1])
+    bullets = [T(200, ["M:0:0"]), T(190, ["M:0:2"], ch="u"), fixed]
+    _, reverts = reduce(bullets, masters)
+    assert [r["master_id"] for r in reverts] == ["M:0:0", "M:0:2"]
+    assert reverts[0]["overflow"] == 0
+    assert reverts[0]["selection"] == "longest non-fixed bullet in failing group"
+    assert bullets[2] is fixed and len(bullets) == 3
+
+
+def test_reworded_bullet_whose_source_is_in_use_takes_first_unused_master():
+    masters = [M("M:0:0", 100), M("M:0:1", 50)]
+    bullets = [fae._master_bullet(masters[0]), T(200, ["M:0:0"])]
+    _, reverts = reduce(bullets, masters)
+    assert reverts[0]["master_id"] == "M:0:1"
+    assert [b["master_id"] for b in bullets] == ["M:0:0", "M:0:1"]
+
+
+def test_pool_bullet_over_capacity_takes_first_unused_master():
+    masters = [M("M:0:0", 60), M("M:0:1", 70)]
+    bullets = [fae._master_bullet(masters[1]), T(150, ["p-x"])]
+    _, reverts = reduce(bullets, masters)
+    assert reverts[0]["master_id"] == "M:0:0" and len(bullets) == 2
+
+
+def test_summary_bullet_reverts_to_a_master_summary_bullet_never_a_role_bullet():
+    masters = [M("M:S:0", 60), M("M:S:1", 70)]
+    bullets = [T(150, ["M:0:0"]), fae._master_bullet(masters[1])]
+    _, reverts = reduce(bullets, masters, use_sources=False)
+    assert reverts[0]["master_id"] == "M:S:0"
+    assert bullets[0]["source_ids"] == ["M:S:0"]
+
+
+def test_tie_break_is_last_in_document_order():
+    masters = [M("M:0:0", 50), M("M:0:1", 50)]
+    bullets = [T(100, []), T(100, [], ch="u")]
+    _, reverts = reduce(bullets, masters)
+    assert [r["field"] for r in reverts] == ["role 0 bullet 1", "role 0 bullet 0"]
+
+
+def test_summary_verbatim_bullet_carries_master_id():
+    res = run(master_echo(inventory()))
+    assert [b["master_id"] for b in res["summary_bullets"]] == ["M:S:0", "M:S:1"]
+
+
+def test_summary_over_master_count_drops_from_the_end():
+    t = master_echo(inventory())
+    t["summary_bullets"].append({"text": "Led teams across two companies.", "source_ids": ["p-cross"]})
+    res = run(t)
+    assert len(res["summary_bullets"]) == 2
+    assert all(b["text"] != "Led teams across two companies." for b in res["summary_bullets"])
+    assert any("B5" in e["reason"] and e["action"] == "dropped" for e in res["events"])
+    assert fae.tailoring_state(res) == "partial"
+
+
+def test_full_slots_reported_against_the_final_pairing():
+    masters = [M("M:0:0", 180), M("M:0:1", 90)]
+    bullets = [T(92, ["p-x"]), T(184, ["M:0:0"], ch="u")]
     inv = inventory()
-    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
-    res["headline"]["text"] += " x" * 400
-    fae.apply_budget(inv, res)
-    assert res["budget"]["fits"] is False
-
-
-def test_budget_warns_near_limit():
-    inv = inventory()
-    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
-    fae.apply_budget(inv, res)
-    assert res["budget"]["warn"] is True  # master echo uses 100% of the budget
+    inv["roles"][0]["bullets"] = masters
+    res = fae.validate_tailoring(inv, pool(), master_echo(inventory()))
+    res["roles"][0]["bullets"] = bullets
+    fae.apply_capacity(inv, res)
+    full = {(x["slot"], x["paired"]) for x in res["budget"]["full"]}
+    assert ("M:0:0", "M:0:0") in full and ("M:0:1", "p-x") in full
+    assert res["budget"]["reverts"] == []
 
 
 def test_garbage_response_reverts_everything_safely():
@@ -340,4 +471,4 @@ def test_garbage_response_reverts_everything_safely():
     inv = inventory()
     assert [b["text"] for b in res["summary_bullets"]] == [b["text"] for b in inv["summary_bullets"]]
     assert all(len(r["bullets"]) == 2 for r in res["roles"])
-    assert res["budget"]["fits"]
+    assert res["budget"]["reverts"] == []

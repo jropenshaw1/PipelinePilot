@@ -18,6 +18,7 @@
 
 import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -721,7 +722,7 @@ def load_resume_pool(pool_dir, inventory: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Resume tailoring (ADR-015): checks, fallbacks, limits, budget
+# Resume tailoring (ADR-015): checks, fallbacks, limits, length capacity
 # Pure functions over the inventory, the pool and the model's tailoring
 # JSON. Nothing here calls the API or touches files.
 #
@@ -736,7 +737,12 @@ def load_resume_pool(pool_dir, inventory: dict) -> dict:
 _EDGE_PUNCT = ".,;:!?()[]\"'"
 _SENTENCE_END = (".", ";", ":", "?")
 _MAGNITUDE = re.compile(r"\d[MKB]\b")
-BUDGET_WARN_SHARE = 0.97
+
+# ADR-015 Amendment 2 B1: shortest and longest full (non-last) line observed when
+# calibrating against renders of the owner's template. A calibrated heuristic, not a
+# layout guarantee; recalibrate if the template's font, size or margins change.
+RESUME_LINE_MIN_CHARS = 92
+RESUME_LINE_MAX_CHARS = 111
 
 
 def _tokens(text: str) -> list[tuple[str, bool]]:
@@ -894,14 +900,20 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
         return None
 
     summary = []
+    summary_used = set()
     for n, b in enumerate(tailored.get("summary_bullets") or []):
         problems = _check_bullet(b, summary_allowed, table, role_bullet=False)
         if problems:
             events.append({"field": f"summary bullet {n}", "action": "dropped", "reason": "; ".join(problems)})
             continue
         srcs = [table[s]["text"] for s in b["source_ids"]]
+        # a summary bullet worded exactly like a master summary bullet carries its ID (Amendment 2 B3)
+        mid = next((m["id"] for m in inventory["summary_bullets"]
+                    if m["id"] not in summary_used and _same(b["text"], m["text"])), None)
+        if mid:
+            summary_used.add(mid)
         summary.append({"text": b["text"].strip(), "source_ids": list(b["source_ids"]),
-                        "status": _status(b["text"], srcs)})
+                        "status": _status(b["text"], srcs), "master_id": mid})
     if not summary:
         summary = [_master_bullet(b) for b in inventory["summary_bullets"]]
         events.append({"field": "summary bullets", "action": "reverted", "reason": "none passed (floor)"})
@@ -1016,9 +1028,15 @@ def _bullet_chars(bullets) -> int:
 
 def apply_role_limits(inventory: dict, pool: dict, res: dict) -> dict:
     """Amendment 1: A1 (count cap per role), then A3 (character ceiling for
-    roles kept out of the summary). Mutates and returns res."""
+    roles kept out of the summary). Amendment 2 B5 extends A1 to summary
+    bullets. Mutates and returns res."""
     excluded = pool.get("summary_excluded_roles", set())
     events = res["events"]
+    s_cap = len(inventory["summary_bullets"])
+    while len(res["summary_bullets"]) > s_cap:
+        gone = res["summary_bullets"].pop()
+        events.append({"field": "summary bullets", "action": "dropped",
+                       "reason": f"over the {s_cap}-bullet summary cap (A1, Amendment 2 B5): {gone['text'][:60]}"})
     for role, master in zip(res["roles"], inventory["roles"]):
         ri, cap = role["role_index"], len(master["bullets"])
         while len(role["bullets"]) > cap:
@@ -1058,58 +1076,114 @@ def _comp_line(c: dict) -> str:
     return c["label"] + ": " + " | ".join(c["terms"])
 
 
-def _editable_chars(headline, subtitle, paragraph, summary, comps, roles) -> int:
-    return (len(headline) + len(subtitle) + len(paragraph)
-            + sum(len(b["text"]) for b in summary)
-            + sum(len(_comp_line(c)) for c in comps)
-            + sum(_bullet_chars(r["bullets"]) for r in roles))
+def slot_capacity(n: int, kind: str = "body") -> int:
+    """ADR-015 Amendment 2 B1. Headline and subtitle: their master length.
+    Every other paragraph of n master characters: max(n, LO x ceil(n / HI)).
+    Non-decreasing in n and never less than n."""
+    if kind in ("headline", "subtitle"):
+        return n
+    return max(n, RESUME_LINE_MIN_CHARS * math.ceil(n / RESUME_LINE_MAX_CHARS))
 
 
-def apply_budget(inventory: dict, res: dict) -> dict:
-    """ADR-015 §6. Mutates res; sets res["budget"]. If nothing fits,
-    res["budget"]["fits"] is False and the run must publish master-copy."""
+def resume_capacities(inventory: dict) -> dict:
+    """Capacity of every editable slot of the master, computed on every run."""
     inv = inventory
-    limit = _editable_chars(inv["headline"]["text"], inv["subtitle"]["text"],
-                            inv["summary_paragraph"]["text"], inv["summary_bullets"],
-                            inv["competencies"], inv["roles"])
-    events = res["events"]
+    return {
+        "headline": slot_capacity(len(inv["headline"]["text"]), "headline"),
+        "subtitle": slot_capacity(len(inv["subtitle"]["text"]), "subtitle"),
+        "summary_paragraph": slot_capacity(len(inv["summary_paragraph"]["text"])),
+        "competencies": [slot_capacity(len(_comp_line(c))) for c in inv["competencies"]],
+        "summary_bullets": {b["id"]: slot_capacity(len(b["text"])) for b in inv["summary_bullets"]},
+        "roles": [{b["id"]: slot_capacity(len(b["text"])) for b in r["bullets"]} for r in inv["roles"]],
+    }
 
-    def used():
-        return _editable_chars(res["headline"]["text"], res["subtitle"]["text"],
-                               res["summary_paragraph"]["text"], res["summary_bullets"],
-                               res["competencies"], res["roles"])
 
-    steps = []
-    if used() > limit and res["summary_paragraph"]["text"] != inv["summary_paragraph"]["text"]:
-        res["summary_paragraph"] = {"text": inv["summary_paragraph"]["text"], "status": "verified"}
-        steps.append("summary paragraph reverted to master")
-    if used() > limit and any(c["status"] != "verified" for c in res["competencies"]):
-        res["competencies"] = [{"label": c["label"], "terms": list(c["terms"]), "status": "verified"}
-                               for c in inv["competencies"]]
-        steps.append("competency lines reverted to master")
-    while used() > limit:
-        multi = [r for r in res["roles"] if len(r["bullets"]) > 1]
-        if not multi:
-            break
-        top = max(len(r["bullets"]) for r in multi)
-        role = max((r for r in multi if len(r["bullets"]) == top), key=lambda r: r["role_index"])
-        gone = role["bullets"].pop()
-        steps.append(f"role {role['role_index']}: dropped '{gone['text'][:60]}'")
-    while used() > limit and len(res["summary_bullets"]) > 1:
-        gone = res["summary_bullets"].pop()
-        steps.append(f"summary: dropped '{gone['text'][:60]}'")
-    for s in steps:
-        events.append({"field": "budget", "action": "reduced", "reason": s})
-    total = used()
-    res["budget"] = {"used": total, "limit": limit, "share": total / limit if limit else 0.0,
-                     "fits": total <= limit,
-                     "warn": limit > 0 and total / limit > BUDGET_WARN_SHARE}
+def _pair_group(bullets: list, master_bullets: list, caps: dict) -> list:
+    """B2 sorted pairing: the k tailored bullets, longest first, against the k
+    largest capacities. Returns [(bullet index, slot master ID)]."""
+    slots = sorted(range(len(master_bullets)), key=lambda j: (-caps[master_bullets[j]["id"]], j))
+    order = sorted(range(len(bullets)), key=lambda i: (-len(bullets[i]["text"]), i))
+    return [(i, master_bullets[slots[j]]["id"]) for j, i in enumerate(order)]
+
+
+def _reduce_group(field: str, bullets: list, master_bullets: list, caps: dict,
+                  events: list, reverts: list, use_sources: bool) -> list:
+    """B3 group reduction. Reverts the longest non-fixed bullet until the group
+    passes; returns the final pairing. Terminates and never removes a bullet:
+    an all-fixed group always passes (B3 a to d)."""
+    masters = {b["id"]: b for b in master_bullets}
+
+    def fixed(i):
+        mid = bullets[i].get("master_id")
+        return (mid in masters and _same(bullets[i]["text"], masters[mid]["text"])
+                and sum(1 for b in bullets if b.get("master_id") == mid) == 1)
+
+    while True:
+        pairs = _pair_group(bullets, master_bullets, caps)
+        over = {i: len(bullets[i]["text"]) - caps[sid] for i, sid in pairs}
+        if all(v <= 0 for v in over.values()):
+            return pairs
+        candidates = [i for i in range(len(bullets)) if not fixed(i)]
+        if not candidates:  # unreachable by B3 (a); fail closed rather than loop
+            raise RuntimeError(f"{field}: capacity check failed with every bullet at master text")
+        i = max(candidates, key=lambda n: (len(bullets[n]["text"]), n))  # tie: last in document order
+        carried = {b.get("master_id") for n, b in enumerate(bullets) if n != i}
+        prefs = [sid for sid in bullets[i].get("source_ids", []) if sid in masters] if use_sources else []
+        prefs += [b["id"] for b in master_bullets]
+        target = next(m for m in prefs if m not in carried)  # exists by B3 (c)
+        old = bullets[i]
+        bullets[i] = _master_bullet(masters[target])
+        overflow = max(0, over[i])
+        events.append({"field": f"{field} bullet {i}", "action": "reverted",
+                       "reason": f"length capacity: longest non-fixed bullet in failing group "
+                                 f"(overflow {overflow}); master {target} restored"})
+        reverts.append({"field": f"{field} bullet {i}", "replaced": old["text"], "master_id": target,
+                        "selection": "longest non-fixed bullet in failing group", "overflow": overflow})
+
+
+def apply_capacity(inventory: dict, res: dict) -> dict:
+    """ADR-015 Amendment 2 B2 to B4 (replaces the §6 character budget). Mutates
+    res; sets res["budget"] = {"slots", "reverts", "full"}. Length alone never
+    removes a bullet or produces master-copy."""
+    inv, caps = inventory, resume_capacities(inventory)
+    events, reverts, slots = res["events"], [], []
+
+    def single(field, text, cap, master_text, put):
+        overflow = len(text) - cap
+        if overflow > 0:
+            put()
+            events.append({"field": field, "action": "reverted",
+                           "reason": f"length capacity: over its own capacity (overflow {overflow}); master restored"})
+            reverts.append({"field": field, "replaced": text, "master_id": field,
+                            "selection": "over its own capacity", "overflow": overflow})
+            text = master_text
+        slots.append({"slot": field, "capacity": cap, "used": len(text), "paired": field})
+
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        master_text = inv[key]["text"]
+        single(key, res[key]["text"], caps[key], master_text,
+               lambda key=key, m=master_text: res.__setitem__(key, {"text": m, "status": "verified"}))
+    for n, (c, m) in enumerate(zip(res["competencies"], inv["competencies"])):
+        def put(n=n, m=m):
+            res["competencies"][n] = {"label": m["label"], "terms": list(m["terms"]), "status": "verified"}
+        single(f"competency '{m['label']}'", _comp_line(c), caps["competencies"][n], _comp_line(m), put)
+
+    groups = [("summary", res["summary_bullets"], inv["summary_bullets"], caps["summary_bullets"], False)]
+    groups += [(f"role {r['role_index']}", r["bullets"], m["bullets"], caps["roles"][k], True)
+               for k, (r, m) in enumerate(zip(res["roles"], inv["roles"]))]
+    for field, bullets, masters, gcaps, use_sources in groups:
+        for i, sid in _reduce_group(field, bullets, masters, gcaps, events, reverts, use_sources):
+            b = bullets[i]
+            slots.append({"slot": sid, "capacity": gcaps[sid], "used": len(b["text"]),
+                          "paired": b.get("master_id") or ", ".join(b.get("source_ids", []))})
+    res["budget"] = {"slots": slots, "reverts": reverts,
+                     "full": [x for x in slots if x["used"] == x["capacity"]]}
     return res
 
 
 def tailoring_state(res: dict) -> str:
     """tailored (no fallbacks or drops) or partial. master-copy is decided by
-    the orchestrator (load failure, API failure, budget failure)."""
+    the orchestrator (load failure, API failure, render failure)."""
     return "partial" if res["events"] else "tailored"
 
 
@@ -1256,9 +1330,8 @@ def write_resume_trace(out_path, *, run_id: str, state: str, company: str, role:
         b = res.get("budget", {})
         lines.append(f"**retuned items:** {len(items)}")
         if b:
-            warn = " (warning: above 97%)" if b.get("warn") else ""
-            lines.append(f"**budget:** {b['used']:,} of {b['limit']:,} characters "
-                         f"({b['share']:.0%}){warn}")
+            full = ", ".join(f"{x['slot']} ({x['paired']})" for x in b["full"]) or "none"
+            lines.append(f"**length capacity:** {len(b['reverts'])} revert(s); slots at full capacity: {full}")
         lines += ["", "## Retuned items: review before sending", ""]
         if not items:
             lines.append("_(none: every published line is copied word for word from a source)_")
@@ -1273,6 +1346,12 @@ def write_resume_trace(out_path, *, run_id: str, state: str, company: str, role:
                     lines.append(f"- master: {inventory[key]['text']}")
                 else:
                     lines.append("- sources: master and pool vocabulary")
+            lines.append("")
+        if b and b["reverts"]:
+            lines += ["## Length capacity reverts", ""]
+            for r in b["reverts"]:
+                lines += [f"- **{r['field']}** ({r['selection']}, overflow {r['overflow']}): "
+                          f"master {r['master_id']} restored; replaced: {r['replaced']}"]
             lines.append("")
         lines += ["## Changes the checks made", ""]
         lines += [f"- **{e['field']}** {e['action']}: {e['reason']}" for e in res["events"]] or ["_(none)_"]
@@ -1458,11 +1537,15 @@ Rules (a Python validator enforces them; a bullet that breaks one is replaced or
 - A role bullet starts with the same first word as one of its sources.
 - No em dashes.
 - A role may not have more bullets than it has on the master. Pool items replace bullets; they never add.
+  The summary may not have more bullets than max_summary_bullets.
 - Roles marked "minimized" may not take more characters than they do on the master.
 - Prefer a source's exact text when it already fits the job description. Reword only to move
   the job description's vocabulary into a bullet whose meaning stays the same.
-- Keep the total length of the resume no longer than the master: when one bullet grows,
-  shorten or swap another. Text beyond the budget is cut automatically, lowest priority first.
+- Length: every master paragraph has a max_characters limit. The headline, subtitle, summary
+  paragraph and each competency line ("Label: term | term") must fit their own limit, or they revert
+  to the master. Within the summary and within each role, line up your bullets and that group's
+  master limits, each sorted longest first; every bullet must fit the limit it lines up with, or
+  bullets are reverted to master text, longest first.
 
 Headline, subtitle and summary paragraph: rewrite toward the job description using only names,
 tools and numbers that appear somewhere in the master or the pool. Competencies: return one list
@@ -1485,24 +1568,32 @@ metric-forward, role-summary."""
 
 def _tailoring_request(inventory: dict, pool: dict, jd_text: str, result: dict) -> str:
     excluded = pool.get("summary_excluded_roles", set())
+    caps = resume_capacities(inventory)
     roles = []
-    for r in inventory["roles"]:
+    for k, r in enumerate(inventory["roles"]):
         ri = r["role_index"]
         roles.append({
             "role_index": ri, "title": r["title"], "company_line": r["company_line"],
             "max_bullets": len(r["bullets"]),
             "master_characters": _bullet_chars(r["bullets"]),
             "minimized": ri in excluded,
-            "master_bullets": [{"id": b["id"], "text": b["text"]} for b in r["bullets"]],
+            "master_bullets": [{"id": b["id"], "text": b["text"], "max_characters": caps["roles"][k][b["id"]]}
+                               for b in r["bullets"]],
             "pool_items": [{"id": it["item_id"], "text": it["text"]}
                            for it in pool.get("items", []) if it["role_index"] == ri],
         })
     payload = {
         "headline": inventory["headline"]["text"],
+        "headline_max_characters": caps["headline"],
         "subtitle": inventory["subtitle"]["text"],
+        "subtitle_max_characters": caps["subtitle"],
         "summary_paragraph": inventory["summary_paragraph"]["text"],
-        "summary_bullets": [{"id": b["id"], "text": b["text"]} for b in inventory["summary_bullets"]],
-        "competencies": [{"label": c["label"], "terms": c["terms"]} for c in inventory["competencies"]],
+        "summary_paragraph_max_characters": caps["summary_paragraph"],
+        "max_summary_bullets": len(inventory["summary_bullets"]),
+        "summary_bullets": [{"id": b["id"], "text": b["text"], "max_characters": caps["summary_bullets"][b["id"]]}
+                            for b in inventory["summary_bullets"]],
+        "competencies": [{"label": c["label"], "terms": c["terms"], "max_characters": caps["competencies"][n]}
+                         for n, c in enumerate(inventory["competencies"])],
         "roles": roles,
         "summary_only_pool_items": [{"id": it["item_id"], "text": it["text"]}
                                     for it in pool.get("items", []) if it["role_index"] is None],
@@ -1583,9 +1674,7 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
         tailored = tailor_resume(client, inv, pool, jd_text, result, personal_context, model=model)
         res = validate_tailoring(inv, pool, tailored)
         apply_role_limits(inv, pool, res)
-        apply_budget(inv, res)
-        if not res["budget"]["fits"]:
-            raise RuntimeError("tailored resume does not fit the length budget")
+        apply_capacity(inv, res)
         state = tailoring_state(res)
         retuned = len(retuned_items(res))
         render_tailored_resume(master, inv, res, resume_new, run_id, state)

@@ -24,7 +24,7 @@ def tailored_res(inv):
     }
     res = fae.validate_tailoring(inv, pool, t)
     fae.apply_role_limits(inv, pool, res)
-    fae.apply_budget(inv, res)
+    fae.apply_capacity(inv, res)
     return pool, res
 
 

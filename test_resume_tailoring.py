@@ -135,18 +135,20 @@ def test_blank_pool_path_tailors_from_master_alone(env):
     assert out["state"] == "tailored"
 
 
-def test_budget_failure_publishes_master_copy(env, monkeypatch):
+def test_length_revert_makes_the_run_partial_and_still_publishes(env, monkeypatch):
+    """Amendment 2: length alone never produces master-copy."""
     master, folder, pool, inv = env
-    real = fae.apply_budget
+    real = fae.validate_tailoring
 
-    def overflow(inventory, res):
-        real(inventory, res)
-        res["budget"]["fits"] = False
+    def lengthen(inventory, pl, tailored):
+        res = real(inventory, pl, tailored)
+        b = res["roles"][0]["bullets"][0]
+        b.update(text=b["text"] + " x" * 200, status="retuned", master_id=None)
         return res
 
-    monkeypatch.setattr(fae, "apply_budget", overflow)
+    monkeypatch.setattr(fae, "validate_tailoring", lengthen)
     out = gen(env, Client(echo(inv)))
-    assert out["state"] == "master-copy" and "length budget" in out["message"]
+    assert out["state"] == "partial" and out["outcome"] == "published"
 
 
 def test_render_failure_publishes_master_copy(env, monkeypatch):
