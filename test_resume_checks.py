@@ -569,8 +569,8 @@ def _a3_case():
     inv = inventory()
     masters = [M("M:0:0", 180), M("M:0:1", 90), M("M:0:2", 50)]
     inv["roles"][0]["bullets"] = masters
-    res = fae.validate_tailoring(inv, pool(), master_echo(inventory()))
-    res["events"].clear()
+    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
+    assert res["events"] == []  # Lexi impl. NB7d: built from the same inventory, nothing to hide
     res["roles"][0]["bullets"] = [T(140, ["M:0:0"]), T(95, ["M:0:1"], ch="u"), T(80, ["M:0:2"], ch="v")]
     return inv, res
 
@@ -593,7 +593,7 @@ def test_a3_applies_only_to_excluded_roles():
     """Gee B1: the same input with the exclusion off is not held to the master total."""
     inv, res = _a3_case()
     capacity(inv, res)
-    fae.check_final_invariants(inv, res)
+    fae.check_final_invariants(inv, res, frozenset())
     assert not any("A3" in e["reason"] for e in res["events"])
     assert fae._bullet_chars(res["roles"][0]["bullets"]) > 320
 
@@ -633,12 +633,25 @@ def test_final_invariants_reject_tampered_results(tamper, message):
     (lambda r: r["competencies"].pop(), "competency line count"),
     (lambda r: r["roles"][0]["bullets"].append(dict(r["roles"][0]["bullets"][0])), "has 3 bullets"),
 ])
-def test_structure_guards_run_before_any_pairing(tamper, message):
+def test_structure_guards_in_apply_capacity(tamper, message):
     inv = inventory()
     res = fae.validate_tailoring(inv, pool(), master_echo(inv))
     tamper(res)
     with pytest.raises(fae.StructureError, match=message):
-        fae.apply_capacity(inv, res)
+        fae.apply_capacity(inv, res, frozenset())
+
+
+def test_role_order_is_checked_before_the_first_pairing():
+    """Gee NB1, Lexi NB7c: apply_role_limits() pairs roles for the count cap, so it checks
+    role order first; reversed roles are not capped against the wrong master."""
+    inv = inventory()
+    inv["roles"][1]["bullets"].append(B("M:1:2", "Kept the lights on."))
+    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
+    res["roles"].reverse()
+    before = [len(r["bullets"]) for r in res["roles"]]
+    with pytest.raises(fae.StructureError, match="role_index"):
+        fae.apply_role_limits(inv, pool(), res)
+    assert [len(r["bullets"]) for r in res["roles"]] == before  # nothing was capped
 
 
 @pytest.mark.parametrize("copy", [
@@ -663,7 +676,9 @@ def test_single_word_unsourced_competency_term_does_not_publish():
     sentence-initial, so the §3.1 check let an unsourced 'Terraform' publish."""
     t = master_echo(inventory())
     t["competencies"][0] = ["Strategy", "Terraform", "Team Building"]
-    assert "Terraform" not in run(t)["competencies"][0]["terms"]
+    res = run(t)
+    assert "Terraform" not in res["competencies"][0]["terms"]
+    assert [e["reason"] for e in res["events"]] == ["'Terraform': not a phrase in the master"]  # Gee NB2, Lexi NB7a
 
 
 def test_cross_role_verbatim_copy_citing_the_other_role_is_rejected():
@@ -681,6 +696,8 @@ def test_cross_role_verbatim_copy_citing_own_sources_needs_its_names_and_numbers
                                    "source_ids": ["M:1:1"]}
     res = run(t)
     assert all("AWS" not in b["text"] for b in res["roles"][1]["bullets"])
+    reason = next(e["reason"] for e in res["events"] if e["field"] == "role 1 bullet 1")
+    assert "term 'AWS'" in reason and "number '12'" in reason  # Lexi NB7b: rejected for these, not another reason
 
 
 def test_cross_role_verbatim_copy_that_traces_to_own_sources_publishes():
@@ -844,7 +861,7 @@ def test_d1_case_only_failure_with_no_terms_left_reverts():
     assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
     assert [(e["action"], e["reason"]) for e in line_events(res)] == [
         ("dropped", "'Spark': capitalized differently in the master"),
-        ("dropped", "'spark': repeats an earlier term"),
+        ("dropped", "'spark': repeats 'Spark'"),
         ("reverted", "no terms passed")]
 
 
@@ -856,12 +873,13 @@ def test_d1_case_failure_mixed_with_another_failure_reverts():
 
 
 def test_d1_duplicates_are_removed_before_the_case_check():
-    """Round 3 (Lexi NB4): 'spark' repeats 'Spark' and is dropped first, so the lowercase
-    form cannot survive the case drop of the capitalized one."""
+    """Round 3 (Lexi NB4): the duplicate check runs before the case check. 'Spark' is
+    processed first and recorded as seen, then dropped for case; 'spark' is then dropped
+    as its repeat, so the lowercase form cannot survive the case drop (Lexi impl. NB7f)."""
     res = d1_run(["Strategy", "Spark", "spark"], "Led spark adoption.")
     assert res["competencies"][0]["terms"] == ["Strategy"]
     assert [e["reason"] for e in line_events(res)] == [
-        "'Spark': capitalized differently in the master", "'spark': repeats an earlier term"]
+        "'Spark': capitalized differently in the master", "'spark': repeats 'Spark'"]
 
 
 def test_d1_duplicate_term_is_dropped():
@@ -869,7 +887,7 @@ def test_d1_duplicate_term_is_dropped():
     assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", "Team Building"],
                                       "status": "verified"}
     assert line_events(res) == [{"field": "competency 'Leadership'", "action": "dropped",
-                                 "reason": "'strategy': repeats an earlier term"}]
+                                 "reason": "'strategy': repeats 'Strategy'"}]
 
 
 @pytest.mark.parametrize("bad", ["", "   ", 7, None])
@@ -896,3 +914,87 @@ def test_d1_tokens_strip_rule():
     assert fae._d1_tokens('(".NET," C++ [CI/CD] go-to-market!)') == [
         (".NET", True, True), ("C++", False, False), ("CI/CD", True, True), ("go-to-market", False, True)]
     assert fae._d1_tokens("AWS ( Azure") == [("AWS", False, False), ("Azure", True, False)]
+
+
+# ── Implementation review fixes (commit 7) ──
+
+def test_case_only_copy_of_a_summary_master_is_that_master():
+    """Lexi impl. B1 (summary): a case-only copy of M:S:0 citing a role bullet used to publish
+    with no master ID; a capacity restore then put M:S:0 beside it and F3 failed the run."""
+    inv = inventory()
+    inv["summary_bullets"][0]["text"] = "Built the AWS landing zone for 40 apps."
+    inv["summary_bullets"][1]["text"] = "Owned a budget across ten teams."
+    inv["roles"][0]["bullets"][0]["text"] = "Built the AWS landing zone for 40 apps in 2021."
+    t = master_echo(inv)
+    t["summary_bullets"] = [
+        {"text": "Built the aws landing zone for 40 apps.", "source_ids": ["M:0:0"]},
+        {"text": "Owned a budget across ten teams " + "and more " * 12 + ".", "source_ids": ["M:S:1"]}]
+    res = run(t, inv=inv)  # run() applies check_final_invariants
+    assert res["summary_bullets"][0] == fae._master_bullet(inv["summary_bullets"][0])
+    assert [b["text"] for b in res["summary_bullets"]] == [b["text"] for b in inv["summary_bullets"]]
+
+
+def test_case_only_copy_of_a_role_master_is_that_master():
+    """Lexi impl. B1 (role): a line citing a pool item and equal to M:0:1 but for case is
+    M:0:1, so capacity cannot restore M:0:1 a second time."""
+    inv = inventory()
+    inv["roles"][0]["bullets"].append(B("M:0:2", "Owned the budget across ten teams."))
+    inv["roles"][0]["bullets"][1]["text"] = "Owned a budget across ten teams."
+    pl = pool()
+    pl["items"].append({"item_id": "p1", "role_period": "dir", "role_index": 0,
+                        "text": "Owned a Budget across ten teams and the budget review."})
+    t = master_echo(inv)
+    t["roles"][0]["bullets"] = [
+        {"text": inv["roles"][0]["bullets"][0]["text"], "source_ids": ["M:0:0"]},
+        {"text": "Owned a Budget across ten teams.", "source_ids": ["p1"]},
+        {"text": "Owned the budget review " + "and more " * 12 + ".", "source_ids": ["p1"]}]
+    res = fae.validate_tailoring(inv, pl, t)
+    assert res["roles"][0]["bullets"][1] == fae._master_bullet(inv["roles"][0]["bullets"][1])
+    fae.apply_role_limits(inv, pl, res)
+    fae.apply_capacity(inv, res, frozenset())
+    fae.check_final_invariants(inv, res, frozenset())  # used to raise: "repeats the text of an earlier bullet"
+
+
+@pytest.mark.parametrize("term", ["Leader | Platforms", "|", "Strategy|Team"])
+def test_d1_pipe_in_a_term_reverts_its_line(term):
+    """Lexi impl. B2: '|' is the competency separator; 'Leader | Platforms' matched the
+    headline's tokens and rendered as two terms, escaping the case and duplicate rules."""
+    res = d1_run(["Strategy", term, "Team Building"])
+    assert_reverted(res)
+    assert line_events(res)[0]["reason"] == f"'{term}': punctuation inside the term"
+
+
+@pytest.mark.parametrize("term, text, published", [
+    ("AWS.", "Ran release management.", "AWS"),
+    ("(Kubernetes)", "Ran Kubernetes upgrades.", "Kubernetes"),
+    ("Vendor   Management", "Ran vendor management.", "Vendor Management"),
+])
+def test_d1_passing_term_is_published_cleaned(term, text, published):
+    """Lexi impl. NB1, NB2: edge punctuation and extra spaces are not published."""
+    res = d1_run(["Strategy", term, "Team Building"], text)
+    assert res["competencies"][0]["terms"] == ["Strategy", published, "Team Building"]
+    assert line_events(res) == []
+
+
+def test_d1_owner_term_with_extra_spaces_publishes_the_owner_term():
+    """Lexi impl. NB2: the exemption compares whitespace-collapsed text and publishes the
+    owner's exact term, so the line is verified."""
+    res = d1_run(["Strategy", "Team   Building"])
+    assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", "Team Building"],
+                                      "status": "verified"}
+    assert line_events(res) == []
+
+
+def test_d1_repeat_after_cleaning_is_dropped():
+    res = d1_run(["Strategy", "AWS", "AWS.", "Team Building"])
+    assert res["competencies"][0]["terms"] == ["Strategy", "AWS", "Team Building"]
+    assert [e["reason"] for e in line_events(res)] == ["'AWS.': repeats 'AWS'"]
+
+
+def test_final_invariants_reject_a_verified_competency_line_that_is_not_the_master():
+    """Lexi impl. NB8."""
+    inv = inventory()
+    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
+    res["competencies"][0]["terms"] = ["Team Building", "Strategy"]  # still marked verified
+    with pytest.raises(fae.FinalInvariantError, match="marked verified but not the master terms"):
+        fae.check_final_invariants(inv, res, frozenset())

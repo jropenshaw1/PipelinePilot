@@ -804,6 +804,12 @@ def _same(a: str, b: str) -> bool:
     return _norm(a) == _norm(b)
 
 
+def _same_line(a: str, b: str) -> bool:
+    """Whitespace-collapsed, lower-cased equality: the key every duplicate check uses.
+    A line equal to an own-group master under this key is that master (Lexi impl. B1)."""
+    return _norm(a).lower() == _norm(b).lower()
+
+
 def _source_table(inventory: dict, pool: dict) -> dict:
     """source_id -> {"text", "role_index", "kind"} for every citable source."""
     table = {}
@@ -880,6 +886,8 @@ def _d1_in_text(words: list, text: list, exact: bool) -> bool:
 def _d1_check(term: str, corpus, master_terms: set) -> str | None:
     """None if the term passes D1; "case" if a one-token term with a capital matches a
     master token only when case is ignored; otherwise the reason it fails."""
+    if "|" in term:  # the competency separator inside a term (Lexi impl. B2)
+        return "punctuation inside the term"
     if term in master_terms:  # the owner's own term always passes (D1, Effect)
         return None
     toks = _d1_tokens(term)
@@ -950,8 +958,9 @@ class FinalInvariantError(TailoringCheckError):
 
 def _is_fixed(bullets: list, i: int, masters: dict) -> bool:
     """Amendment 2 F1: bullet i is the exact text of a master of its own group,
-    carries that master's ID, and no other bullet carries the same ID. Shared by
-    the A3 step, capacity reduction and the final invariants."""
+    carries that master's ID, and no other bullet carries the same ID. Used by the A3
+    step and capacity reduction; check_final_invariants() checks the same three rules
+    inline, as part of a wider set."""
     mid = bullets[i].get("master_id")
     return (mid in masters and bullets[i]["text"] == masters[mid]["text"]
             and sum(1 for b in bullets if b.get("master_id") == mid) == 1)
@@ -1036,9 +1045,10 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
             continue
         summary_placed.add(_norm(b["text"]).lower())
         srcs = [table[s]["text"] for s in b["source_ids"]]
-        # a summary bullet worded like a master summary bullet becomes that bullet (Amendment 2 B3, F1)
+        # a summary bullet worded like a master summary bullet (case and spacing aside) becomes
+        # that bullet (Amendment 2 B3, F1; Lexi impl. B1)
         m = next((m for m in inventory["summary_bullets"]
-                  if m["id"] not in summary_used and _same(b["text"], m["text"])), None)
+                  if m["id"] not in summary_used and _same_line(b["text"], m["text"])), None)
         if m:
             summary_used.add(m["id"])
             summary.append(_master_bullet(m))
@@ -1067,28 +1077,31 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
         # Amendment 4 D1 rev 3: duplicates go first, then the phrase and case check. A
         # one-token term that fails only on case is dropped; any other failure, or a
         # mix, reverts the whole line to its master terms.
+        # A passing term is published cleaned: the owner's exact term, or its D1 words
+        # joined by single spaces (edge punctuation and extra spaces removed).
         d1_corpus = _d1_corpus(inventory)
-        master_terms = {t for c in inventory["competencies"] for t in c["terms"]}
+        master_terms = {_norm(t): t for c in inventory["competencies"] for t in c["terms"]}
         for c, terms in zip(inventory["competencies"], comp_in):
             field = f"competency '{c['label']}'"
-            kept, drops, failures, seen = [], [], [], set()
+            kept, drops, failures, seen = [], [], [], {}
             for t in terms if isinstance(terms, list) else []:
                 if not isinstance(t, str) or not t.strip():
                     failures.append("empty or non-string term")
                     continue
-                t = t.strip()
-                key = _norm(t).lower()
-                if key in seen:
-                    drops.append(f"'{t}': repeats an earlier term")
+                t = _norm(t)
+                pub = master_terms.get(t) or " ".join(w for w, _, _ in _d1_tokens(t))
+                key = pub.lower()
+                if pub and key in seen:
+                    drops.append(f"'{t}': repeats '{seen[key]}'")
                     continue
-                seen.add(key)
+                seen.setdefault(key, t)
                 why = _d1_check(t, d1_corpus, master_terms)
                 if why == "case":
                     drops.append(f"'{t}': capitalized differently in the master")
                 elif why:
                     failures.append(f"'{t}': {why}")
                 else:
-                    kept.append(t)
+                    kept.append(pub)
             if failures:
                 lines.append({"label": c["label"], "terms": list(c["terms"]), "status": "verified"})
                 events.append({"field": field, "action": "reverted", "reason": "; ".join(failures)})
@@ -1135,7 +1148,7 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
             if not problems:
                 srcs = [table[s]["text"] for s in b["source_ids"]]
                 mid = next((s for s in b["source_ids"]
-                            if s in master_ids and _same(b["text"], master_ids[s]["text"])), None)
+                            if s in master_ids and _same_line(b["text"], master_ids[s]["text"])), None)
                 if mid and mid in used:
                     events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
                                    "reason": f"master bullet {mid} already used"})
@@ -1145,8 +1158,8 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
                                    "reason": "same text as a bullet already in this role"})
                     continue
                 if mid is None:
-                    # a pool item worded exactly like a master bullet of this role counts as that bullet
-                    mid = next((m for m, mb in master_ids.items() if _same(b["text"], mb["text"])), None)
+                    # a line worded like a master bullet of this role (case and spacing aside) is that bullet
+                    mid = next((m for m, mb in master_ids.items() if _same_line(b["text"], mb["text"])), None)
                     if mid in used:
                         events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
                                        "reason": f"master bullet {mid} already used"})
@@ -1196,6 +1209,9 @@ def apply_role_limits(inventory: dict, pool: dict, res: dict) -> dict:
                        "reason": f"over the {s_cap}-bullet summary cap (A1, Amendment 2 B5): {gone['text'][:60]}"})
     if len(res["roles"]) != len(inventory["roles"]):
         raise StructureError(f"{len(res['roles'])} roles against {len(inventory['roles'])} in the master")
+    for r, m in zip(res["roles"], inventory["roles"]):  # F9: order before the first pairing
+        if r.get("role_index") != m["role_index"]:
+            raise StructureError(f"role_index {r.get('role_index')!r} where the master has {m['role_index']}")
     for role, master in zip(res["roles"], inventory["roles"]):
         ri, cap = role["role_index"], len(master["bullets"])
         while len(role["bullets"]) > cap:
@@ -1290,7 +1306,7 @@ def _reduce_role(field: str, bullets: list, master_bullets: list, caps: dict, ce
                        "reason": f"over its master character total (A3); master {target} restored"})
 
 
-def apply_capacity(inventory: dict, res: dict, excluded_roles=frozenset()) -> dict:
+def apply_capacity(inventory: dict, res: dict, excluded_roles) -> dict:
     """ADR-015 Amendment 2 B2 to B4 (replaces the §6 character budget), with A3
     for the roles in excluded_roles (Amendment 2 F2). Mutates res; the only
     writer of res["budget"] = {"slots", "reverts", "full"}, recorded once after
@@ -1337,7 +1353,7 @@ def apply_capacity(inventory: dict, res: dict, excluded_roles=frozenset()) -> di
     return res
 
 
-def check_final_invariants(inventory: dict, res: dict, excluded_roles=frozenset()) -> None:
+def check_final_invariants(inventory: dict, res: dict, excluded_roles) -> None:
     """Amendment 2 F3: the last check before rendering. Raises FinalInvariantError
     listing every violation; the orchestrator then publishes master-copy."""
     _check_structure(inventory, res)
@@ -1351,6 +1367,8 @@ def check_final_invariants(inventory: dict, res: dict, excluded_roles=frozenset(
     for n, (c, m) in enumerate(zip(res["competencies"], inv["competencies"])):
         if len(_comp_line(c)) > caps["competencies"][n]:
             bad.append(f"competency '{m['label']}' over its capacity")
+        if c["status"] == "verified" and c["terms"] != m["terms"]:
+            bad.append(f"competency '{m['label']}' marked verified but not the master terms")
     groups = [("summary", res["summary_bullets"], inv["summary_bullets"], caps["summary_bullets"], None)]
     for k, (r, m) in enumerate(zip(res["roles"], inv["roles"])):
         ceiling = _bullet_chars(m["bullets"]) if r["role_index"] in excluded_roles else None
@@ -1377,7 +1395,7 @@ def check_final_invariants(inventory: dict, res: dict, excluded_roles=frozenset(
                     bad.append(f"{field} repeats {mid}")
                 seen_ids.add(mid)
             else:
-                twin = next((m for m in master_bullets if _same(b["text"], m["text"])), None)
+                twin = next((m for m in master_bullets if _same_line(b["text"], m["text"])), None)
                 if twin:
                     bad.append(f"{field} bullet {i} matches {twin['id']} but does not carry it")
             key = _norm(b["text"]).lower()

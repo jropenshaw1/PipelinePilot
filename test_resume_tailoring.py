@@ -185,6 +185,7 @@ def test_final_invariant_failure_publishes_master_copy_and_names_it(env, monkeyp
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "master-copy" and out["outcome"] == "published"
     assert "final invariant failed: role 0 bullet 1 over its paired capacity" in out["message"]
+    assert "role 0 bullet 1 over its paired capacity" in out["trace"].read_text(encoding="utf-8")  # Lexi NB7e
 
 
 def test_render_failure_publishes_master_copy(env, monkeypatch):
