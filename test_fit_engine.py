@@ -42,6 +42,8 @@ def test_resume_at_cap_passes_whole():
 
 
 def test_jd_over_cap_stops_and_is_not_truncated():
+    """The message format is asserted on purpose: the phrase "never truncated",
+    the actual size and the limit. A boundary regression shows up here first."""
     with pytest.raises(fae.InputLimitError, match="never truncated") as e:
         fae._apply_input_caps("j" * (fae.JD_MAX_CHARS + 1), "resume")
     assert "40,001 characters; the limit is 40,000" in str(e.value)
@@ -93,7 +95,7 @@ def test_over_limit_jd_stops_run_with_no_api_call_and_no_file_changes(tmp_path, 
     resume.write_text("r" * 300, encoding="utf-8")
     before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in folder.iterdir()}
     calls = []
-    monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: "key")
+    monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: calls.append("vault") or "key")
     monkeypatch.setattr(fae.database, "get_opportunity",
                         lambda db, name: {"company_name": "Acme", "role_title": "Director",
                                           "job_url": None, "status": "New"})
@@ -104,7 +106,51 @@ def test_over_limit_jd_stops_run_with_no_api_call_and_no_file_changes(tmp_path, 
                              on_success=lambda r, f: done.append(f), on_error=errors.append,
                              model="claude-test-1")
     t.join(10)
-    assert calls == [] and not done
+    assert calls == [] and not done  # no vault call, no analysis call, no tailoring call
     assert len(errors) == 1 and "40,001 characters; the limit is 40,000" in errors[0]
     assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in folder.iterdir()} == before
 
+
+def test_successful_run_sends_the_identical_full_jd_to_both_calls(tmp_path, monkeypatch):
+    """ADR-015 Amendment 3: the analysis call and the tailoring call each
+    receive exactly the JD text loaded from the file, with no truncation."""
+    pytest.importorskip("anthropic")
+    jd = ("Requirements section at the end. " * 700)[:21474]
+    folder = tmp_path / "Acme_Director"
+    folder.mkdir()
+    (folder / "JD_Acme_Director.txt").write_text(jd, encoding="utf-8")
+    resume = tmp_path / "resume.md"
+    resume.write_text("r" * 300, encoding="utf-8")
+    (tmp_path / "resume.docx").write_bytes(b"master docx placeholder")
+    seen = {}
+
+    def analysis(client, jd_text, *a, **k):
+        seen["analysis"] = jd_text
+        return _result("Led the datacenter exit across many teams.")
+
+    def tailor(client, inv, pool, jd_text, *a, **k):
+        seen["tailor"] = jd_text
+        raise RuntimeError("stop after the tailoring boundary")
+
+    monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: "key")
+    monkeypatch.setattr(fae.database, "get_opportunity",
+                        lambda db, name: {"company_name": "Acme", "role_title": "Director",
+                                          "job_url": None, "status": "New"})
+    monkeypatch.setattr(fae.database, "update_opportunity", lambda *a, **k: None)
+    monkeypatch.setattr(fae, "_call_api", analysis)
+    monkeypatch.setattr(fae, "tailor_resume", tailor)
+    monkeypatch.setattr(fae, "parse_master_resume", lambda path: {})
+    monkeypatch.setattr(fae, "master_copy_resume",
+                        lambda master, out, run_id: out.write_bytes(b"copy"))
+    monkeypatch.setattr(fae, "write_resume_trace",
+                        lambda path, **k: path.write_text("trace", encoding="utf-8"))
+    for name in ("generate_fit_summary", "generate_cover_letter", "generate_interview_guide"):
+        monkeypatch.setattr(fae, name, lambda *a, **k: None)
+    errors, done = [], []
+    t = fae.run_fit_analysis(tmp_path / "x.db", str(tmp_path), "Acme_Director", str(resume), 0.65,
+                             on_success=lambda r, f: done.append(f), on_error=errors.append,
+                             model="claude-test-1")
+    t.join(10)
+    assert errors == [] and len(done) == 1
+    assert len(jd) == 21474
+    assert seen["analysis"] == jd and seen["tailor"] == jd

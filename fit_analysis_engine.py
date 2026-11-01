@@ -1889,9 +1889,6 @@ def run_fit_analysis(
             return
 
         try:
-            resolved_key = vault.get_secret(vault.ANTHROPIC_KEY_ITEM, "desktop-jfa")
-            client = anthropic.Anthropic(api_key=resolved_key)
-
             folder_path = Path(job_search_root) / folder_name
             opp = database.get_opportunity(db_path, folder_name)
             if not opp:
@@ -1922,10 +1919,16 @@ def run_fit_analysis(
             resume_text = extract_docx_text(resume_file) if resume_file.suffix == ".docx" \
                 else _read_text_file(resume_file)
 
+            # ADR-015 Amendment 3: both input caps run before the credential is
+            # retrieved, so a run that cannot proceed never touches the vault.
+            jd_text, resume_text = _apply_input_caps(jd_text, resume_text)
+
+            resolved_key = vault.get_secret(vault.ANTHROPIC_KEY_ITEM, "desktop-jfa")
+            client = anthropic.Anthropic(api_key=resolved_key)
+
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
             # values as named facts at the top of the user message.
-            jd_text, resume_text = _apply_input_caps(jd_text, resume_text)
 
             _p("Running fit analysis...", "All agents (single call)", stage="api_call")
             personal_context = _load_context_skill(context_skill_path)
