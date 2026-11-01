@@ -953,6 +953,7 @@ def test_case_only_copy_of_a_role_master_is_that_master():
     fae.apply_role_limits(inv, pl, res)
     fae.apply_capacity(inv, res, frozenset())
     fae.check_final_invariants(inv, res, frozenset())  # used to raise: "repeats the text of an earlier bullet"
+    assert [b["master_id"] for b in res["roles"][0]["bullets"]] == ["M:0:0", "M:0:1", "M:0:2"]  # Lexi delta N3
 
 
 @pytest.mark.parametrize("term", ["Leader | Platforms", "|", "Strategy|Team"])
@@ -989,6 +990,17 @@ def test_d1_repeat_after_cleaning_is_dropped():
     res = d1_run(["Strategy", "AWS", "AWS.", "Team Building"])
     assert res["competencies"][0]["terms"] == ["Strategy", "AWS", "Team Building"]
     assert [e["reason"] for e in line_events(res)] == ["'AWS.': repeats 'AWS'"]
+
+
+def test_d1_cleaned_repeat_of_an_owner_term_with_edge_punctuation_is_dropped():
+    """Lexi delta N1: the duplicate key is the cleaned form for owner terms too."""
+    inv = inventory()
+    inv["competencies"][0]["terms"] = ["Strategy", "Agile."]
+    t = master_echo(inv)
+    t["competencies"][0] = ["Strategy", "Agile.", "Agile"]
+    res = run(t, inv=inv)
+    assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", "Agile."], "status": "verified"}
+    assert [e["reason"] for e in res["events"]] == ["'Agile': repeats 'Agile.'"]
 
 
 def test_final_invariants_reject_a_verified_competency_line_that_is_not_the_master():

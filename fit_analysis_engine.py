@@ -883,7 +883,7 @@ def _d1_in_text(words: list, text: list, exact: bool) -> bool:
     return False
 
 
-def _d1_check(term: str, corpus, master_terms: set) -> str | None:
+def _d1_check(term: str, corpus, master_terms: dict) -> str | None:
     """None if the term passes D1; "case" if a one-token term with a capital matches a
     master token only when case is ignored; otherwise the reason it fails."""
     if "|" in term:  # the competency separator inside a term (Lexi impl. B2)
@@ -1090,7 +1090,7 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
                     continue
                 t = _norm(t)
                 pub = master_terms.get(t) or " ".join(w for w, _, _ in _d1_tokens(t))
-                key = pub.lower()
+                key = " ".join(w for w, _, _ in _d1_tokens(pub)).lower()  # cleaned, owner terms too (Lexi delta N1)
                 if pub and key in seen:
                     drops.append(f"'{t}': repeats '{seen[key]}'")
                     continue
