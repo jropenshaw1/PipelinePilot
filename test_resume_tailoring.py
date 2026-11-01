@@ -149,6 +149,10 @@ def test_length_revert_makes_the_run_partial_and_still_publishes(env, monkeypatc
     monkeypatch.setattr(fae, "validate_tailoring", lengthen)
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "partial" and out["outcome"] == "published"
+    # Lexi N-5: what was published, not only the state
+    exact = inv["roles"][0]["bullets"][0]["text"]
+    assert _role_bullets(out["resume"], inv["roles"][0]["company_line"], 2)[0] == exact
+    assert "**length capacity:** 1 revert(s)" in out["trace"].read_text(encoding="utf-8")
 
 
 def test_final_invariant_failure_publishes_master_copy_and_names_it(env, monkeypatch):
@@ -205,25 +209,23 @@ def test_interrupted_publication_is_recovered_first(env):
     assert "Previous resume restored" in out["message"]
 
 
-anthropic = pytest.importorskip("anthropic")
-httpx = pytest.importorskip("httpx")
+# The SDK tests below take the api_error fixture (conftest.py), which skips only them. A
+# module-level importorskip("httpx") here skipped every test in this file wherever httpx
+# was missing, as it is under anthropic SDK 1.0 (found 2026-11-01).
 
-
-def test_tailoring_stage_model_not_found_gives_master_copy_with_guidance(env):
+def test_tailoring_stage_model_not_found_gives_master_copy_with_guidance(env, api_error):
     master, folder, pool, inv = env
-    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    e = anthropic.NotFoundError("model: claude-gone-1", response=httpx.Response(404, request=req), body=None)
+    e = api_error("NotFoundError", 404, "model: claude-gone-1")
     out = gen(env, Client(exc=e), model="claude-gone-1")
     assert out["state"] == "master-copy" and out["outcome"] == "published"
     assert "Settings → JFA Model" in out["message"]
 
 
-def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(env, monkeypatch):
+def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(env, monkeypatch, api_error):
     master, folder, pool, inv = env
     first = gen(env, Client(echo(inv)))
     old = fae.resume_run_id(first["resume"])
-    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    e = anthropic.NotFoundError("gone", response=httpx.Response(404, request=req), body=None)
+    e = api_error("NotFoundError", 404, "gone")
 
     def denied(src, dst):
         raise OSError("access denied")
@@ -233,3 +235,68 @@ def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(e
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and "JFA Model" in out["message"]
     assert fae.resume_run_id(folder / "Resume_Acme_Director.docx") == old
+
+
+# ── Amendment 2 F10: the round-2 regressions end to end ──
+
+def _line(n, words):
+    """A bullet of exactly n characters: 'Built' and lower-case words, so it carries no
+    named term or number and passes the lexical checks against any 'Built' source."""
+    s = "Built"
+    while len(s) < n:
+        s += " " + words[len(s) % len(words)]
+    s = s[:n - 1]
+    return (s[:-1] + "x" if s.endswith(" ") else s) + "."
+
+
+def _role_bullets(path, company_line, count):
+    from docx import Document
+    paras = [p.text for p in Document(str(path)).paragraphs]
+    start = paras.index(company_line) + 1
+    return paras[start:start + count]
+
+
+def test_r1_padded_master_echo_publishes_tailored_with_exact_text(env):
+    """R1: a master bullet echoed with extra spaces took its master ID and kept the padded
+    text; once that text was over capacity, capacity raised with every bullet at master
+    text and the run published master-copy. It now publishes the exact master text."""
+    master, folder, pool, inv = env
+    t = echo(inv)
+    exact = inv["roles"][0]["bullets"][0]["text"]
+    padded = exact.replace(" ", " " * 30)
+    assert len(padded) > fae.slot_capacity(len(exact))  # the R1 condition
+    t["roles"][0]["bullets"][0]["text"] = padded
+    out = gen(env, Client(t))
+    assert out["state"] == "tailored" and out["outcome"] == "published"
+    assert _role_bullets(out["resume"], inv["roles"][0]["company_line"], 2)[0] == exact
+
+
+def test_r2_minimized_role_holds_a3_after_capacity_and_publishes(tmp_path):
+    """R2 (Gee): masters 180/90/50 in a role kept out of the summary, rewrites 140/95/80.
+    Capacity restorations used to lift the role over its 320-character master total; the
+    combined step holds both limits and the run publishes partial, not master-copy."""
+    a, b = "the shared platform for every region and team".split(), "our core services across all sites".split()
+    masters = [_line(180, a), _line(90, a), _line(50, a)]
+    roles = [("Director, Platform Engineering", "Example Corp | Phoenix, AZ | 2020 - 2024", masters),
+             ("Manager, Systems", "Sample Inc. | Tempe, AZ | 2015 - 2020", ["Ran release management for two platforms."])]
+    master = make_master(tmp_path / "Master.docx", roles=roles)
+    folder = tmp_path / "Acme_Director"
+    folder.mkdir()
+    role_map = ROLE_MAP.replace('  company_line: "Example Corp | Phoenix, AZ | 2020 - 2024"\n',
+                                '  company_line: "Example Corp | Phoenix, AZ | 2020 - 2024"\n  in_summary: false\n')
+    pool = make_pool(tmp_path, {}, role_map=role_map)
+    inv = fae.parse_master_resume(master)
+    assert [len(x["text"]) for x in inv["roles"][0]["bullets"]] == [180, 90, 50]
+    assert fae.load_resume_pool(pool, inv)["summary_excluded_roles"] == {0}
+    t = echo(inv)
+    t["roles"][0]["bullets"] = [{"text": _line(n, b), "source_ids": [f"M:0:{j}"]}
+                                for j, n in enumerate((140, 95, 80))]
+    checked = fae.validate_tailoring(inv, fae.load_resume_pool(pool, inv), t)
+    assert [x["status"] for x in checked["roles"][0]["bullets"]] == ["retuned"] * 3  # not rejected upstream
+    out = gen((master, folder, pool, inv), Client(t))
+    assert out["state"] == "partial" and out["outcome"] == "published"
+    published = _role_bullets(out["resume"], roles[0][1], 3)
+    assert sum(len(x) for x in published) <= 320
+    assert published == masters  # every rewrite was restored by capacity or A3
+    trace = out["trace"].read_text(encoding="utf-8")
+    assert "A3" in trace and "master-copy" not in trace

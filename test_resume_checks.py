@@ -5,6 +5,7 @@ import copy
 import pytest
 
 import fit_analysis_engine as fae
+from test_resume_capacity import capacity, group_problems
 
 
 def B(i, text):
@@ -57,11 +58,11 @@ def master_echo(inv):
     }
 
 
-def run(tailored, excluded=frozenset()):
-    inv, pl = inventory(), pool(excluded)
+def run(tailored, excluded=frozenset(), inv=None):
+    inv, pl = inv or inventory(), pool(excluded)
     res = fae.validate_tailoring(inv, pl, tailored)
     fae.apply_role_limits(inv, pl, res)
-    fae.apply_capacity(inv, res, pl["summary_excluded_roles"])
+    capacity(inv, res, pl["summary_excluded_roles"])  # F10 helper asserted on every run
     fae.check_final_invariants(inv, res, pl["summary_excluded_roles"])
     return res
 
@@ -316,9 +317,10 @@ def T(n, sources, master_id=None, ch="t"):
 
 def reduce(bullets, masters, use_sources=True):
     caps = {m["id"]: fae.slot_capacity(len(m["text"])) for m in masters}
-    events, reverts = [], []
+    events, reverts, before = [], [], list(bullets)
     pairs = fae._reduce_group("role 0", bullets, masters, caps, events, reverts, use_sources)
     assert all(len(bullets[i]["text"]) <= caps[sid] for i, sid in pairs)
+    assert not group_problems("role 0", before, bullets, masters, caps)
     return events, reverts
 
 
@@ -335,7 +337,16 @@ def test_capacity_rule():
 def test_master_echo_has_zero_reverts_and_reports_full_slots():
     res = run(master_echo(inventory()))
     assert res["budget"]["reverts"] == [] and fae.tailoring_state(res) == "tailored"
-    assert {x["slot"] for x in res["budget"]["full"]} >= {"headline", "subtitle"}
+    # Lexi N-5: the exact set, computed from the fixture's own capacities
+    inv = inventory()
+    used = {"headline": inv["headline"]["text"], "subtitle": inv["subtitle"]["text"],
+            "summary_paragraph": inv["summary_paragraph"]["text"]}
+    used.update({f"competency '{c['label']}'": fae._comp_line(c) for c in inv["competencies"]})
+    used.update({b["id"]: b["text"] for b in inv["summary_bullets"] + [x for r in inv["roles"] for x in r["bullets"]]})
+    kind = {"headline": "headline", "subtitle": "subtitle"}
+    expected = {k for k, v in used.items() if fae.slot_capacity(len(v), kind.get(k, "body")) == len(v)}
+    assert expected == {"headline", "subtitle"}  # the fixture's only full slots
+    assert {x["slot"] for x in res["budget"]["full"]} == expected
 
 
 @pytest.mark.parametrize("key, longer", [
@@ -380,7 +391,7 @@ def test_bullet_over_capacity_reverts_alone_and_role_keeps_its_tailoring():
     res = fae.validate_tailoring(inv, pool(), t)
     b = res["roles"][0]["bullets"][1]
     b.update(text=b["text"] + " x" * 60, status="retuned", master_id=None)  # bypasses the checks
-    fae.apply_capacity(inv, res)
+    capacity(inv, res)
     assert res["roles"][0]["bullets"][0]["text"] == "Built an AWS platform team of 12 engineers."
     assert res["roles"][0]["bullets"][1] == fae._master_bullet(inv["roles"][0]["bullets"][1])
     assert res["roles"][0]["bullets"][1]["status"] == "verified"
@@ -445,12 +456,22 @@ def test_summary_verbatim_bullet_carries_master_id():
 
 
 def test_summary_over_master_count_drops_from_the_end():
-    t = master_echo(inventory())
-    t["summary_bullets"].append({"text": "Led teams across two companies.", "source_ids": ["p-cross"]})
+    """Lexi N-5: the dropped bullet is the longest and over every summary capacity, so it
+    would be reverted if it took part in pairing; B5 drops it before capacity runs."""
+    inv = inventory()
+    long = ("Owned a $5M budget across 10 teams and led teams across two companies, "
+            "owned a budget across teams.")
+    t = master_echo(inv)
+    t["summary_bullets"].append({"text": long, "source_ids": ["M:S:1", "p-cross"]})
+    checked = fae.validate_tailoring(inv, pool(), t)
+    assert [b["text"] for b in checked["summary_bullets"]][-1] == long  # passes the checks
+    assert len(long) > max(fae.resume_capacities(inv)["summary_bullets"].values())
     res = run(t)
     assert len(res["summary_bullets"]) == 2
-    assert all(b["text"] != "Led teams across two companies." for b in res["summary_bullets"])
+    assert all(b["text"] != long for b in res["summary_bullets"])
     assert any("B5" in e["reason"] and e["action"] == "dropped" for e in res["events"])
+    assert res["budget"]["reverts"] == []
+    assert not any("length capacity" in e["reason"] for e in res["events"])
     assert fae.tailoring_state(res) == "partial"
 
 
@@ -459,9 +480,10 @@ def test_full_slots_reported_against_the_final_pairing():
     bullets = [T(92, ["p-x"]), T(184, ["M:0:0"], ch="u")]
     inv = inventory()
     inv["roles"][0]["bullets"] = masters
-    res = fae.validate_tailoring(inv, pool(), master_echo(inventory()))
+    res = fae.validate_tailoring(inv, pool(), master_echo(inv))  # Lexi N-5: same inventory for both
+    assert res["roles"][0]["bullets"] == [fae._master_bullet(m) for m in masters]
     res["roles"][0]["bullets"] = bullets
-    fae.apply_capacity(inv, res)
+    capacity(inv, res)
     full = {(x["slot"], x["paired"]) for x in res["budget"]["full"]}
     assert ("M:0:0", "M:0:0") in full and ("M:0:1", "p-x") in full
     assert res["budget"]["reverts"] == []
@@ -546,7 +568,7 @@ def _a3_case():
 def test_a3_holds_after_capacity_for_an_excluded_role():
     """R2 and F2: one combined loop; no bullet removed; both constraints hold."""
     inv, res = _a3_case()
-    fae.apply_capacity(inv, res, {0})
+    capacity(inv, res, {0})
     fae.check_final_invariants(inv, res, {0})
     bullets = res["roles"][0]["bullets"]
     assert len(bullets) == 3
@@ -560,7 +582,7 @@ def test_a3_holds_after_capacity_for_an_excluded_role():
 def test_a3_applies_only_to_excluded_roles():
     """Gee B1: the same input with the exclusion off is not held to the master total."""
     inv, res = _a3_case()
-    fae.apply_capacity(inv, res)
+    capacity(inv, res)
     fae.check_final_invariants(inv, res)
     assert not any("A3" in e["reason"] for e in res["events"])
     assert fae._bullet_chars(res["roles"][0]["bullets"]) > 320
@@ -622,3 +644,45 @@ def test_summary_duplicate_text_is_dropped(copy):
     assert [b["text"] for b in res["summary_bullets"]] == [b["text"] for b in inventory()["summary_bullets"]]
     assert any(e["reason"] == "same text as a bullet already in the summary" for e in res["events"])
     assert fae.tailoring_state(res) == "partial"
+
+
+# ── Amendment 2 F4 and F10 (commit 3) ──
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="T1: Amendment 4 D1")
+def test_single_word_unsourced_competency_term_does_not_publish():
+    """T1 today: a one-word competency term is sentence-initial, so the §3.1 check does
+    not treat it as a named term and an unsourced 'Terraform' publishes. Amendment 4 D1
+    (F7) fixes this; that commit removes the marker, and an unexpected pass before then
+    turns the suite red."""
+    t = master_echo(inventory())
+    t["competencies"][0] = ["Strategy", "Terraform", "Team Building"]
+    assert "Terraform" not in run(t)["competencies"][0]["terms"]
+
+
+def test_cross_role_verbatim_copy_citing_the_other_role_is_rejected():
+    """Lexi NB7: a role bullet cannot cite another role's sources."""
+    t = master_echo(inventory())
+    t["roles"][1]["bullets"][1] = {"text": "Cut cloud spend 20% in one year.", "source_ids": ["M:0:1"]}
+    res = run(t)
+    assert "Cut cloud spend 20% in one year." not in [b["text"] for b in res["roles"][1]["bullets"]]
+    assert any(e["field"] == "role 1 bullet 1" and "does not belong" in e["reason"] for e in res["events"])
+
+
+def test_cross_role_verbatim_copy_citing_own_sources_needs_its_names_and_numbers():
+    t = master_echo(inventory())
+    t["roles"][1]["bullets"][1] = {"text": "Ran release management for 12 engineers on AWS.",
+                                   "source_ids": ["M:1:1"]}
+    res = run(t)
+    assert all("AWS" not in b["text"] for b in res["roles"][1]["bullets"])
+
+
+def test_cross_role_verbatim_copy_that_traces_to_own_sources_publishes():
+    """Records current behavior (Lexi NB7, note only): a line that repeats another
+    role's text, cites this role's sources and traces to them passes, because the
+    duplicate check and F3 are per group. A change here is a decision, not a fix."""
+    inv = inventory()
+    inv["roles"][0]["bullets"][1]["text"] = "Ran release management for two teams."
+    t = master_echo(inv)
+    t["roles"][1]["bullets"][1] = {"text": "Ran release management for two teams.", "source_ids": ["M:1:1"]}
+    res = run(t, inv=inv)
+    assert res["roles"][1]["bullets"][1]["text"] == res["roles"][0]["bullets"][1]["text"]
