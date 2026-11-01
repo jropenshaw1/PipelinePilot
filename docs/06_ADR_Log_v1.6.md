@@ -14,6 +14,7 @@
 - **v1.4** (October 28, 2026) — ADR-014 (Status Model v2 and Archive on Done); implementation notes added to ADR-014 after implementation
 - **v1.5** (October 30, 2026) — ADR-015 (Traceable Resume Tailoring), with Amendment 1 (Role Prominence)
 - **v1.6** (October 30, 2026) — ADR-016 (JFA Model as a Setting)
+- **v1.6, amended** (October 31, 2026) — ADR-015 Amendment 2 (Per-Paragraph Length Capacity) and Amendment 3 (The Job Description Is Never Truncated)
 
 ---
 
@@ -732,7 +733,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1). Implementation pending.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1) and October 31, 2026 (Amendments 2 and 3). Implemented October 30–31, 2026, except as noted in Amendments 2 and 3.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -799,13 +800,13 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 
 *Reporting.* The tailoring state (`tailored`, `partial`, `master-copy`) and the publication outcome (`published`, `publication-failed`) are reported together in the progress message, for example "tailored: 4 retuned items need review; published" or "partial; publication-failed, previous resume kept". The trace header and the `.docx` comments field record only states that were actually published. The file names stay fixed in every state.
 
-**6. Length budget.** All editable text (headline, subtitle, summary paragraph, summary bullets, competency lines, role bullets) may not exceed the master's character count for the same sections. Reduction order until it fits: (1) revert the summary paragraph to master; (2) revert competency lines to master; (3) drop the last bullet of the role with the most bullets (tie: the role lowest on the page), never below one bullet per role; (4) drop the last summary bullet, never below one; (5) if still over, `master-copy`. Every reduction is recorded. The trace reports the share of the budget used and warns above 97%. Characters are a size control, not a page count; the owner confirms 2 pages in Word before sending.
+**6. Length budget.** All editable text (headline, subtitle, summary paragraph, summary bullets, competency lines, role bullets) may not exceed the master's character count for the same sections. Reduction order until it fits: (1) revert the summary paragraph to master; (2) revert competency lines to master; (3) drop the last bullet of the role with the most bullets (tie: the role lowest on the page), never below one bullet per role; (4) drop the last summary bullet, never below one; (5) if still over, `master-copy`. Every reduction is recorded. The trace reports the share of the budget used and warns above 97%. Characters are a size control, not a page count; the owner confirms 2 pages in Word before sending. *(Superseded by Amendment 2.)*
 
 **7. Rendering.** The engine edits a copy of the master `.docx`: it replaces the text of single-run paragraphs, clones existing bullet paragraphs for added bullets, and removes paragraphs for dropped ones, so paragraph and run formatting, numbering and spacing carry over. Locked sections, including the hyperlinked contact line, are never touched. Acceptance includes a visual check of a rendered tailored sample against the master.
 
 **8. Data boundary.** Sent to the Anthropic API: the personal context skill, the master resume text, approved pool bullets with their IDs and role periods, the JD and the analysis results. This is the same class of material the existing single call already sends. Written locally: the trace, in the private opportunity folder (outside any repo), containing source and tailored text. The public repo holds code and synthetic test fixtures only; personal config, pool files, traces and request dumps are never committed. Voice ban #6 is removed, which also removes the personal roster from public code.
 
-**9. Input caps.** The resume is sent in full up to 20,000 characters; a longer master stops the run with a clear error instead of truncating. The JD is sent up to 12,000 characters; a longer JD is truncated with a warning in the progress message and in `fit_analysis.md`.
+**9. Input caps.** The resume is sent in full up to 20,000 characters; a longer master stops the run with a clear error instead of truncating. The JD is sent up to 12,000 characters; a longer JD is truncated with a warning in the progress message and in `fit_analysis.md`. *(JD half superseded by Amendment 3: the JD is never truncated.)*
 
 **10. Defect fixes in the same change.** Remove the 6,000-character resume truncation (§9); delete voice ban #6 and self-check item 6; split `top_strengths` on sentence boundaries (`(?<=[.!?])\s+(?=[A-Z])`) in one `_split_sentences()` helper used by both the markdown writer and the database update.
 
@@ -843,7 +844,7 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 
 #### Decision
 
-**A1. Per-role bullet cap.** A role's tailored bullet list may not contain more bullets than that role has on the master. Pool items and other master bullets may replace bullets in that role, but never add to the count.
+**A1. Per-role bullet cap.** A role's tailored bullet list may not contain more bullets than that role has on the master. Pool items and other master bullets may replace bullets in that role, but never add to the count. *(Extended to summary bullets by Amendment 2, B5.)*
 - Enforced in Python after §3 checks and §5 fallbacks: if a role has more bullets than its cap, the lowest-priority bullets are dropped (the model returns bullets in priority order, §2) until it fits. Each drop is recorded in the trace and makes the run state `partial`.
 - The prompt states the cap per role, so a well-behaved response needs no drops.
 - The §5 floor (at least one bullet per role) is unchanged. A1 sets the ceiling; §5 sets the floor.
@@ -870,6 +871,109 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 - Tailoring prompt: lists each role's bullet cap and which roles may not be cited in the summary.
 - Trace: records A1 drops and A2 rejections with their reasons.
 - Tests: a role over its cap drops its lowest-priority bullets and reports `partial`; a pool item replacing a master bullet within the cap passes; a summary bullet citing an excluded role's master bullet, and one citing its pool item, are dropped; summary floor after A2 drops; master summary bullets and summary-only items are unaffected by A2; `in_summary` non-boolean and disagreeing entries reject at load. A3: a minimized role whose swaps exceed its master character total is brought back under it (swap reverted, then master bullets); a minimized role within its total passes; an unflagged role is not subject to A3.
+
+### Amendment 2: Per-Paragraph Length Capacity
+
+**Date:** October 31, 2026
+**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2 (redesign after validation), Gee APPROVE_WITH_CHANGES and Mini APPROVE; round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Implementation pending.
+**Changes:** ADR-015 §6 (length budget), replaced. Amendment 1 A1 extended to summary bullets (B5). §3 to §5, §5.1, §7, A2 and A3 are unchanged. A3 (character ceiling for minimized roles) stays in characters: it governs prominence, not page fit.
+
+#### Context
+
+1. **The master fills its two pages.** The owner keeps the master at exactly two pages. One extra rendered line anywhere produces a third page.
+2. **Characters are the wrong unit.** §6 caps total editable characters at the master's own count, so the master uses 100% of the budget and any lengthening forces a cut. In the first live tailoring, budget pressure dropped a proof point from the current role.
+3. **The round-1 line estimate.** Rev 1 proposed counting each paragraph as ceil(characters / 106) lines against the master's total. Calibration showed full (non-last) bullet lines hold 92 to 111 characters on the owner's template.
+4. **Validation, on the current master, LibreOffice with Carlito (metric-compatible with Calibri), page count and `pdftotext -layout` line count:**
+   - Each of the 30 editable paragraphs (headline, subtitle, summary paragraph, 2 summary bullets, 3 competency lines, 22 role bullets) was lengthened to the largest size the W = 106 estimate allows without counting another line. **13 of 30 rendered an extra line and a third page**: the headline, the summary paragraph, a summary bullet and 10 role bullets. Filling all paragraphs of one type together produced a third page for four of the six types, and filling all 30 together added 13 lines.
+   - Cause: ceil(n/W) with a mid-range W credits a paragraph with room its real lines may not have, since a line holds anywhere from 92 to 111 characters depending on word breaks.
+   - The B1 rule was tested the same way: each of the 12 paragraphs it gives extra room was filled to full capacity alone, then all 30 together, then each page's paragraphs together. **15 renders, 0 extra lines, 0 third pages.** These are observations on this master and template, not a proof for every future substitution.
+
+#### Decision
+
+**B1. Capacity (calibrated heuristic).** Every editable paragraph of the master is a slot with a character capacity:
+- headline and subtitle: their master length (larger or bold type; the filled headline wrapped in validation);
+- every other editable paragraph of n characters: max(n, LO x ceil(n / HI)), with LO = `RESUME_LINE_MIN_CHARS = 92` and HI = `RESUME_LINE_MAX_CHARS = 111`, code constants calibrated to the owner's template.
+
+LO and HI are the shortest and longest full lines observed in calibration. The rule credits a paragraph with extra characters only when the master's own length suggests its last line has room, using the shortest observed line. It is a guardrail calibrated against renders (Context 4), not a layout guarantee: rendered width depends on glyphs and word breaks, so text within capacity can still wrap to an extra line. Capacity is non-decreasing in n and never less than n. Capacities are computed from the master on every run, so they follow the owner's edits. Measured on the current master: 12 of 30 slots have extra room, 316 characters in total.
+
+**B2. Fit test.**
+- *Individual paragraphs:* the headline, the subtitle, the summary paragraph and each competency line must each be within their own slot's capacity.
+- *Groups:* the summary bullets form one group, and each role's bullets form one group. Sort the group's tailored lengths and its master capacities in descending order, pair the k tailored bullets with the k largest capacities, and require each tailored bullet to be within its paired capacity. A group never has more bullets than its master (A1, extended by B5).
+
+Groups and individual paragraphs are tested independently; a revert in one never changes the result of another.
+
+**B3. Reduction** (replaces the §6 order).
+
+*Individual paragraphs:* each that fails B2 is reverted to its master text. Master text is within its own capacity, so one step suffices.
+
+*Groups:* a bullet is **fixed** when its text is the master text of the master bullet whose ID it carries, and no other bullet in the group carries that ID. Bullets restored by this step are fixed. While a group fails B2:
+1. Select the longest bullet in the group that is not fixed (tie: last in document order).
+2. Revert it to a master bullet of its own group that no other bullet in the group carries: for a role bullet, the first of its own source IDs that qualifies, otherwise the first qualifying master bullet of that role in master order; for a summary bullet, the first qualifying master summary bullet in master order. The restored bullet carries that master ID, its master text and `verified` status.
+3. Re-pair and re-test the group.
+
+*Why this terminates and never deletes:*
+- (a) A group whose bullets are all fixed passes B2. Its k bullets are master texts with distinct IDs, and k is at most the master count M. The j-th longest of them is no longer than the j-th longest master bullet, which is within its own capacity; because capacity is non-decreasing in length, that capacity is the j-th largest. So every pair passes.
+- (b) By (a), a failing group always has a bullet that is not fixed, so step 1 always selects one.
+- (c) The other k - 1 bullets carry at most k - 1 distinct master IDs belonging to this group. Since k <= M, at least one qualifying master bullet is available for step 2. No bullet is removed.
+- (d) Each step fixes one more bullet, so a group needs at most one step per bullet.
+
+Length alone never removes a bullet, drops a proof point or produces `master-copy`. The former steps (drop the last bullet of the largest role, drop the last summary bullet, then `master-copy`) are removed.
+
+**B4. Provenance and reporting.** The trace lists each revert: the paragraph, the tailored text it replaced, the master ID restored, the selection reason ("longest non-fixed bullet in failing group" for group bullets, "over its own capacity" for individual paragraphs) and the overflow at selection as max(0, length - paired capacity). A selected group bullet can be within its own paired capacity while another bullet in the group fails, so its recorded overflow can be 0. Any revert makes the run `partial`. After reduction, the trace header reports, against the final pairing, each slot that is at full capacity, recording the capacity slot's master ID separately from the master or source ID of the bullet paired with it. Passing the fit test does not certify two pages: the owner's manual Word check before sending is the required page-fit verification.
+
+**B5. A1 extended to summary bullets.** The tailored summary may not contain more bullets than the master summary. Enforced with A1 for roles: excess bullets are dropped from the end of the model's priority order, each drop is recorded and makes the run `partial`, and the prompt states the cap. This is a count rule: the master has a fixed number of summary lines, and an extra bullet has no slot to fill. The §5 summary floor (at least one) is unchanged.
+
+#### Alternatives Considered
+
+- **Line estimate with one width (rev 1).** Rejected by validation: 13 of 30 false passes (Context 4).
+- **Line estimate with per-paragraph-type widths.** Not adopted: the false passes included role bullets, the largest type, so per-type widths would still need the conservative bound B1 uses.
+- **Whole-role revert (rev 1 step 3).** Rejected (Mini, Jonathan, round 1): one long bullet would discard valid tailoring for the rest of the role.
+- **Revert the largest paired overflow, skipping restored bullets (round-2 suggestion).** Terminates, but paired overflow can point at a bullet that fits its own slot and is only displaced by a longer one. In the round-2 counterexample it reverts the 130-character bullet before the 220-character one, losing tailoring that fits. Reverting the longest unfixed bullet removes the cause.
+- **No summary count cap; unpaired summary bullets fail with capacity 0.** Rejected: an unpaired bullet has no master slot to revert into, so it could only be removed, which is a drop for length under another name.
+- **Character budget (current §6).** Rejected: it forces cuts the page does not need and drops proof points (Context 2).
+- **Render and count pages.** Still rejected for the reason in ADR-015: an office-suite dependency in a background thread. LibreOffice was used offline to validate.
+
+#### Consequences
+
+- Growth room is smaller and more honest than rev 1: about a third of the slots can grow, and most retunes must stay within the master paragraph's length. Retunes that lengthen a headline or subtitle always revert.
+- No bullet is dropped for length, so the current-role proof-point loss in Context 2 cannot recur through the budget. Summary bullets can be dropped for count (B5), as role bullets already can (A1).
+- The fit test can pass a resume that renders a third page (false pass). The manual Word check catches it. If the template's font, size or margins change, recalibrate LO and HI with the validation script and re-run the validation renders.
+- `fit_analysis_engine.py`: `RESUME_LINE_MIN_CHARS`, `RESUME_LINE_MAX_CHARS`; `apply_budget()` and `BUDGET_WARN_SHARE` replaced by the capacity fit test and the B3 reduction; `res["budget"]` reports per-slot results and reverts; `apply_role_limits()` applies the summary cap; summary bullets that match a master summary bullet verbatim carry its master ID, as role bullets already do; the prompt states the summary cap. The 97% warning is removed.
+- Data Dictionary and README note the constants and that they are calibrated to the owner's template.
+- Tests: capacity (headline and subtitle equal master length; n with and without slack; non-decreasing in n); master echo passes with zero reverts; headline over capacity reverts alone and makes the run `partial`; subtitle likewise; a bullet within capacity passes untouched; reordering within a role passes when the sorted pairing passes; a group with fewer bullets than the master pairs with the largest capacities; a bullet over capacity reverts alone while the rest of its role keeps its tailoring; the round-2 counterexample (capacities 184 and 92, tailored 130 and 220) reverts only the 220-character bullet and passes; a reworded bullet whose source master is already in the role reverts to the first unused master; a summary bullet reverts to the first unused master summary bullet, never a role bullet; tie-break by document order; reverted bullets carry master ID, text and `verified`; any revert makes the run `partial`; a summary over the master count drops from the end, records each drop and makes the run `partial`; the trace header reports full slots against the final pairing; every group passes at loop end with no bullet removed for length.
+
+### Amendment 3: The Job Description Is Never Truncated
+
+**Date:** October 31, 2026
+**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2, Mini APPROVE and Gee APPROVE_WITH_CHANGES (Amendment 3 resolved, test and check-order suggestions); round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Revision 2 implemented in `5a1e8ed`; the revision 3 check order and tests are pending.
+**Changes:** ADR-015 §9 (input caps), JD half. The resume half keeps its behavior and now raises the same exception type.
+
+#### Context
+
+1. §9 sent the JD up to 12,000 characters and truncated anything longer, with a one-line warning in `fit_analysis.md` and the progress message. Before ADR-015, every run silently cut the JD at 8,000 characters (and the resume at 6,000).
+2. Truncation removes the end of the posting, where requirements usually sit. The first run to hit the 12,000 cap (21,474 characters) lost its Vendor/MSP section, a degree requirement with no equivalency language, and named platform requirements, in both the analysis and the tailoring call. It scored 0.75 APPLY without the main knockout risk.
+3. The full JD is not lost upstream: quick-fit writes it verbatim to OpenBrain and the import writes it whole to `JD_*.txt`. Truncation happened only in `_apply_input_caps()`.
+4. Sizes on file: 31 active JD files; median about 5,100 characters, 95th percentile about 11,600; one above 12,000; none above 24,000.
+5. In rev 2 code the worker retrieves the Anthropic credential from the agent vault before reading the inputs, so an over-limit run still calls the vault.
+
+#### Decision
+
+1. The JD is sent in full up to `JD_MAX_CHARS = 40,000` characters. This is an operational guardrail against a mis-pasted file, sized to observed JD lengths; it is not a model-capacity or token bound. Provider request-size errors remain ordinary API errors.
+2. The worker reads the JD and the master resume and applies both input caps before it retrieves the credential from the vault, and therefore before any API call or file write. A JD over the limit raises `InputLimitError` (a `RuntimeError` subclass, also used for the resume cap). The error dialog shows its message: the JD's size, the limit, and an instruction to check the JD file for pasted extra content or run the assessment with Claude directly.
+3. The truncation-warning plumbing is removed (`jd_note`, the `fit_analysis.md` Input warning line, the progress-message suffix).
+
+#### Alternatives Considered
+
+- **Raise the cap and keep truncating.** Rejected: any truncation can drop the requirements section, and the owner wants to know when an assessment did not have the whole JD so he can assess it by hand.
+- **Strip boilerplate before sending.** Rejected: extra parsing for a problem the size data does not show.
+- **No limit.** Rejected: a mis-pasted file should stop loudly.
+- **Keep the credential first and narrow the wording to "before any model call".** Rejected (Jonathan): a run that cannot proceed should not touch the vault.
+
+#### Consequences
+
+- Every JFA completed under this amendment sends the full loaded JD to both the analysis and the tailoring call, without application-level truncation. Assessments made before it are not revisited (owner's call); any can be re-run from its `JD_*.txt`.
+- Input tokens rise for long postings only.
+- Tests: a JD of 40,001 characters raises `InputLimitError` naming 40,001 and 40,000 with the manual-assessment instruction; a JD of exactly 40,000 and one of 21,474 pass unchanged; the resume cap raises `InputLimitError`; a full run with a 40,001-character JD makes no vault call, no analysis or tailoring call, reports one error, and leaves every existing file in the folder byte-identical with unchanged modification times; a successful mocked run passes a JD identical to the loaded file text to both the analysis call and the tailoring call; `fit_analysis.md` has no Input warning line. A test docstring states that the message format (the phrase "never truncated", the actual size and the limit) is asserted so boundary regressions are traceable. Rev 2 tests are implemented and passing; the vault-order assertion and the success-path equality test are new in rev 3.
 
 ---
 
