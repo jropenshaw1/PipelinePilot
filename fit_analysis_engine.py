@@ -858,12 +858,65 @@ def _check_bullet(b, allowed, table, role_bullet: bool) -> list[str]:
     return problems
 
 
-def _status(text: str, source_texts) -> str:
-    return "verified" if any(_same(text, s) for s in source_texts) else "retuned"
-
-
 def _master_bullet(b: dict) -> dict:
     return {"text": b["text"], "source_ids": [b["id"]], "status": "verified", "master_id": b["id"]}
+
+
+class TailoringCheckError(RuntimeError):
+    """A tailored result failed a structural or final check; the run publishes master-copy."""
+
+
+class StructureError(TailoringCheckError):
+    """Amendment 2 F9: the result does not line up with the master (roles, lines, counts)."""
+
+    def __init__(self, detail: str):
+        super().__init__(f"tailoring structure check failed: {detail}")
+
+
+class FinalInvariantError(TailoringCheckError):
+    """Amendment 2 F3: a final invariant failed after every length step."""
+
+    def __init__(self, detail: str):
+        super().__init__(f"final invariant failed: {detail}")
+
+
+def _is_fixed(bullets: list, i: int, masters: dict) -> bool:
+    """Amendment 2 F1: bullet i is the exact text of a master of its own group,
+    carries that master's ID, and no other bullet carries the same ID. Shared by
+    the A3 step, capacity reduction and the final invariants."""
+    mid = bullets[i].get("master_id")
+    return (mid in masters and bullets[i]["text"] == masters[mid]["text"]
+            and sum(1 for b in bullets if b.get("master_id") == mid) == 1)
+
+
+def _restore_target(bullets: list, i: int, master_bullets: list, use_sources: bool) -> str:
+    """The master that replaces bullet i: its own cited master if unused, else an
+    unused master no other bullet cites, else any unused master (Amendment 2 F2).
+    One always exists while bullet i is not fixed (F1: fewer IDs in use than masters)."""
+    masters = {b["id"] for b in master_bullets}
+    carried = {b.get("master_id") for n, b in enumerate(bullets) if n != i}
+    cited = {s for n, b in enumerate(bullets) if n != i for s in b.get("source_ids", [])}
+    own = [s for s in bullets[i].get("source_ids", []) if s in masters] if use_sources else []
+    order = [b["id"] for b in master_bullets]
+    prefs = own + [m for m in order if m not in cited] + order
+    return next(m for m in prefs if m not in carried)
+
+
+def _check_structure(inventory: dict, res: dict) -> None:
+    """Amendment 2 F9: before any pairing of tailored and master content."""
+    inv_roles, res_roles = inventory["roles"], res.get("roles", [])
+    if len(res_roles) != len(inv_roles):
+        raise StructureError(f"{len(res_roles)} roles against {len(inv_roles)} in the master")
+    for r, m in zip(res_roles, inv_roles):
+        if r.get("role_index") != m["role_index"]:
+            raise StructureError(f"role_index {r.get('role_index')!r} where the master has {m['role_index']}")
+        if len(r["bullets"]) > len(m["bullets"]):
+            raise StructureError(f"role {m['role_index']} has {len(r['bullets'])} bullets, "
+                                 f"its master {len(m['bullets'])}")
+    if len(res.get("competencies", [])) != len(inventory["competencies"]):
+        raise StructureError("competency line count differs from the master")
+    if len(res.get("summary_bullets", [])) > len(inventory["summary_bullets"]):
+        raise StructureError("more summary bullets than the master")
 
 
 def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
@@ -889,8 +942,10 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
         if problems:
             res[key] = {"text": master, "status": "verified"}
             events.append({"field": key, "action": "reverted", "reason": "; ".join(problems)})
+        elif _same(text, master):  # Amendment 2 F1: verified means the exact master text
+            res[key] = {"text": master, "status": "verified"}
         else:
-            res[key] = {"text": text.strip(), "status": _status(text, [master])}
+            res[key] = {"text": text.strip(), "status": "retuned"}
 
     # Summary bullets: any source except roles excluded from the summary (A2).
     def summary_allowed(sid):
@@ -907,13 +962,19 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
             events.append({"field": f"summary bullet {n}", "action": "dropped", "reason": "; ".join(problems)})
             continue
         srcs = [table[s]["text"] for s in b["source_ids"]]
-        # a summary bullet worded exactly like a master summary bullet carries its ID (Amendment 2 B3)
-        mid = next((m["id"] for m in inventory["summary_bullets"]
-                    if m["id"] not in summary_used and _same(b["text"], m["text"])), None)
-        if mid:
-            summary_used.add(mid)
-        summary.append({"text": b["text"].strip(), "source_ids": list(b["source_ids"]),
-                        "status": _status(b["text"], srcs), "master_id": mid})
+        # a summary bullet worded like a master summary bullet becomes that bullet (Amendment 2 B3, F1)
+        m = next((m for m in inventory["summary_bullets"]
+                  if m["id"] not in summary_used and _same(b["text"], m["text"])), None)
+        if m:
+            summary_used.add(m["id"])
+            summary.append(_master_bullet(m))
+            continue
+        # otherwise a verified line publishes its source's exact text; master_id comes
+        # only from the summary group, so a copy of a role bullet carries none (F1)
+        match = next((s for s in srcs if _same(b["text"], s)), None)
+        summary.append({"text": match if match is not None else b["text"].strip(),
+                        "source_ids": list(b["source_ids"]),
+                        "status": "verified" if match is not None else "retuned", "master_id": None})
     if not summary:
         summary = [_master_bullet(b) for b in inventory["summary_bullets"]]
         events.append({"field": "summary bullets", "action": "reverted", "reason": "none passed (floor)"})
@@ -944,7 +1005,7 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
                 events.append({"field": f"competency '{c['label']}'", "action": "reverted",
                                "reason": "no terms passed"})
             else:
-                same = [x.lower() for x in kept] == [x.lower() for x in c["terms"]]
+                same = kept == list(c["terms"])  # Amendment 2 F1: case included
                 lines.append({"label": c["label"], "terms": kept,
                               "status": "verified" if same else "retuned"})
     res["competencies"] = lines
@@ -980,7 +1041,6 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
             problems = _check_bullet(b, role_allowed, table, role_bullet=True)
             if not problems:
                 srcs = [table[s]["text"] for s in b["source_ids"]]
-                status = _status(b["text"], srcs)
                 mid = next((s for s in b["source_ids"]
                             if s in master_ids and _same(b["text"], master_ids[s]["text"])), None)
                 if mid and mid in used:
@@ -998,11 +1058,15 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
                         events.append({"field": f"role {ri} bullet {n}", "action": "dropped",
                                        "reason": f"master bullet {mid} already used"})
                         continue
-                if mid:
-                    used.add(mid)
                 placed.add(_norm(b["text"]).lower())
-                out.append({"text": b["text"].strip(), "source_ids": list(b["source_ids"]),
-                            "status": status, "master_id": mid})
+                if mid:  # Amendment 2 F1: a master match publishes the exact master bullet
+                    used.add(mid)
+                    out.append(_master_bullet(master_ids[mid]))
+                    continue
+                match = next((s for s in srcs if _same(b["text"], s)), None)  # pool item, exact text
+                out.append({"text": match if match is not None else b["text"].strip(),
+                            "source_ids": list(b["source_ids"]),
+                            "status": "verified" if match is not None else "retuned", "master_id": None})
                 continue
             ids = b.get("source_ids") if isinstance(b, dict) and isinstance(b.get("source_ids"), list) else []
             repl = next((s for s in ids if s in master_ids and s not in used), None)
@@ -1027,48 +1091,24 @@ def _bullet_chars(bullets) -> int:
 
 
 def apply_role_limits(inventory: dict, pool: dict, res: dict) -> dict:
-    """Amendment 1: A1 (count cap per role), then A3 (character ceiling for
-    roles kept out of the summary). Amendment 2 B5 extends A1 to summary
-    bullets. Mutates and returns res."""
-    excluded = pool.get("summary_excluded_roles", set())
+    """Amendment 1 A1 (count cap per role) and Amendment 2 B5 (summary count
+    cap). A3 (the character ceiling for roles kept out of the summary) runs
+    inside apply_capacity() with length capacity (Amendment 2 F2). Mutates and
+    returns res."""
     events = res["events"]
     s_cap = len(inventory["summary_bullets"])
     while len(res["summary_bullets"]) > s_cap:
         gone = res["summary_bullets"].pop()
         events.append({"field": "summary bullets", "action": "dropped",
                        "reason": f"over the {s_cap}-bullet summary cap (A1, Amendment 2 B5): {gone['text'][:60]}"})
+    if len(res["roles"]) != len(inventory["roles"]):
+        raise StructureError(f"{len(res['roles'])} roles against {len(inventory['roles'])} in the master")
     for role, master in zip(res["roles"], inventory["roles"]):
         ri, cap = role["role_index"], len(master["bullets"])
         while len(role["bullets"]) > cap:
             gone = role["bullets"].pop()
             events.append({"field": f"role {ri}", "action": "dropped",
                            "reason": f"over the {cap}-bullet cap (A1): {gone['text'][:60]}"})
-        if ri not in excluded:
-            continue
-        ceiling = _bullet_chars(master["bullets"])
-        while _bullet_chars(role["bullets"]) > ceiling:
-            swapped = [i for i, b in enumerate(role["bullets"]) if not b.get("master_id")]
-            if not swapped:
-                role["bullets"] = [_master_bullet(b) for b in master["bullets"]]
-                events.append({"field": f"role {ri}", "action": "reverted",
-                               "reason": "over its master character total (A3)"})
-                break
-            i = swapped[-1]
-            used = {b.get("master_id") for b in role["bullets"]}
-            unused = next((b for b in master["bullets"] if b["id"] not in used), None)
-            if unused:
-                events.append({"field": f"role {ri}", "action": "replaced",
-                               "reason": f"over its master character total (A3); master {unused['id']} restored"})
-                role["bullets"][i] = _master_bullet(unused)
-            elif len(role["bullets"]) > 1:
-                role["bullets"].pop(i)
-                events.append({"field": f"role {ri}", "action": "dropped",
-                               "reason": "over its master character total (A3)"})
-            else:
-                role["bullets"] = [_master_bullet(b) for b in master["bullets"]]
-                events.append({"field": f"role {ri}", "action": "reverted",
-                               "reason": "over its master character total (A3)"})
-                break
     return res
 
 
@@ -1112,25 +1152,19 @@ def _reduce_group(field: str, bullets: list, master_bullets: list, caps: dict,
     passes; returns the final pairing. Terminates and never removes a bullet:
     an all-fixed group always passes (B3 a to d)."""
     masters = {b["id"]: b for b in master_bullets}
-
-    def fixed(i):
-        mid = bullets[i].get("master_id")
-        return (mid in masters and _same(bullets[i]["text"], masters[mid]["text"])
-                and sum(1 for b in bullets if b.get("master_id") == mid) == 1)
+    if len(bullets) > len(master_bullets):  # F9; also checked before any pairing
+        raise StructureError(f"{field} has more bullets than its master")
 
     while True:
         pairs = _pair_group(bullets, master_bullets, caps)
         over = {i: len(bullets[i]["text"]) - caps[sid] for i, sid in pairs}
         if all(v <= 0 for v in over.values()):
             return pairs
-        candidates = [i for i in range(len(bullets)) if not fixed(i)]
-        if not candidates:  # unreachable by B3 (a); fail closed rather than loop
-            raise RuntimeError(f"{field}: capacity check failed with every bullet at master text")
+        candidates = [i for i in range(len(bullets)) if not _is_fixed(bullets, i, masters)]
+        if not candidates:  # unreachable by B3 (a) once F1 holds; fail closed rather than loop
+            raise FinalInvariantError(f"{field}: over capacity with every bullet at master text")
         i = max(candidates, key=lambda n: (len(bullets[n]["text"]), n))  # tie: last in document order
-        carried = {b.get("master_id") for n, b in enumerate(bullets) if n != i}
-        prefs = [sid for sid in bullets[i].get("source_ids", []) if sid in masters] if use_sources else []
-        prefs += [b["id"] for b in master_bullets]
-        target = next(m for m in prefs if m not in carried)  # exists by B3 (c)
+        target = _restore_target(bullets, i, master_bullets, use_sources)
         old = bullets[i]
         bullets[i] = _master_bullet(masters[target])
         overflow = max(0, over[i])
@@ -1141,10 +1175,34 @@ def _reduce_group(field: str, bullets: list, master_bullets: list, caps: dict,
                         "selection": "longest non-fixed bullet in failing group", "overflow": overflow})
 
 
-def apply_capacity(inventory: dict, res: dict) -> dict:
-    """ADR-015 Amendment 2 B2 to B4 (replaces the §6 character budget). Mutates
-    res; sets res["budget"] = {"slots", "reverts", "full"}. Length alone never
-    removes a bullet or produces master-copy."""
+def _reduce_role(field: str, bullets: list, master_bullets: list, caps: dict, ceiling,
+                 events: list, reverts: list) -> list:
+    """Amendment 2 F2: length capacity and, for a role kept out of the summary,
+    the A3 character ceiling, in one loop. Each A3 step restores one bullet that
+    is not fixed (last in document order), so at most k steps in total; with every
+    bullet fixed, capacity holds (B3 a) and A3 holds (distinct masters of the role
+    cannot exceed its master total). Returns the final pairing."""
+    masters = {b["id"]: b for b in master_bullets}
+    while True:
+        pairs = _reduce_group(field, bullets, master_bullets, caps, events, reverts, True)
+        if ceiling is None or _bullet_chars(bullets) <= ceiling:
+            return pairs
+        candidates = [i for i in range(len(bullets)) if not _is_fixed(bullets, i, masters)]
+        if not candidates:  # unreachable by the argument above; fail closed
+            raise FinalInvariantError(f"{field}: over its master character total with every bullet at master text")
+        i = candidates[-1]
+        target = _restore_target(bullets, i, master_bullets, True)
+        bullets[i] = _master_bullet(masters[target])
+        events.append({"field": field, "action": "replaced",
+                       "reason": f"over its master character total (A3); master {target} restored"})
+
+
+def apply_capacity(inventory: dict, res: dict, excluded_roles=frozenset()) -> dict:
+    """ADR-015 Amendment 2 B2 to B4 (replaces the §6 character budget), with A3
+    for the roles in excluded_roles (Amendment 2 F2). Mutates res; the only
+    writer of res["budget"] = {"slots", "reverts", "full"}, recorded once after
+    every length step. Length alone never removes a bullet."""
+    _check_structure(inventory, res)
     inv, caps = inventory, resume_capacities(inventory)
     events, reverts, slots = res["events"], [], []
 
@@ -1168,17 +1226,73 @@ def apply_capacity(inventory: dict, res: dict) -> dict:
             res["competencies"][n] = {"label": m["label"], "terms": list(m["terms"]), "status": "verified"}
         single(f"competency '{m['label']}'", _comp_line(c), caps["competencies"][n], _comp_line(m), put)
 
-    groups = [("summary", res["summary_bullets"], inv["summary_bullets"], caps["summary_bullets"], False)]
-    groups += [(f"role {r['role_index']}", r["bullets"], m["bullets"], caps["roles"][k], True)
-               for k, (r, m) in enumerate(zip(res["roles"], inv["roles"]))]
-    for field, bullets, masters, gcaps, use_sources in groups:
-        for i, sid in _reduce_group(field, bullets, masters, gcaps, events, reverts, use_sources):
+    groups = [("summary", res["summary_bullets"], inv["summary_bullets"], caps["summary_bullets"],
+               _reduce_group("summary", res["summary_bullets"], inv["summary_bullets"],
+                             caps["summary_bullets"], events, reverts, False))]
+    for k, (r, m) in enumerate(zip(res["roles"], inv["roles"])):
+        field = f"role {r['role_index']}"
+        ceiling = _bullet_chars(m["bullets"]) if r["role_index"] in excluded_roles else None
+        pairs = _reduce_role(field, r["bullets"], m["bullets"], caps["roles"][k], ceiling, events, reverts)
+        groups.append((field, r["bullets"], m["bullets"], caps["roles"][k], pairs))
+    for field, bullets, masters, gcaps, pairs in groups:
+        for i, sid in pairs:
             b = bullets[i]
             slots.append({"slot": sid, "capacity": gcaps[sid], "used": len(b["text"]),
                           "paired": b.get("master_id") or ", ".join(b.get("source_ids", []))})
     res["budget"] = {"slots": slots, "reverts": reverts,
                      "full": [x for x in slots if x["used"] == x["capacity"]]}
     return res
+
+
+def check_final_invariants(inventory: dict, res: dict, excluded_roles=frozenset()) -> None:
+    """Amendment 2 F3: the last check before rendering. Raises FinalInvariantError
+    listing every violation; the orchestrator then publishes master-copy."""
+    _check_structure(inventory, res)
+    inv, caps = inventory, resume_capacities(inventory)
+    bad = []
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        if len(res[key]["text"]) > caps[key]:
+            bad.append(f"{key} over its capacity")
+        if res[key]["status"] == "verified" and res[key]["text"] != inv[key]["text"]:
+            bad.append(f"{key} marked verified but not the exact master text")
+    for n, (c, m) in enumerate(zip(res["competencies"], inv["competencies"])):
+        if len(_comp_line(c)) > caps["competencies"][n]:
+            bad.append(f"competency '{m['label']}' over its capacity")
+    groups = [("summary", res["summary_bullets"], inv["summary_bullets"], caps["summary_bullets"], None)]
+    for k, (r, m) in enumerate(zip(res["roles"], inv["roles"])):
+        ceiling = _bullet_chars(m["bullets"]) if r["role_index"] in excluded_roles else None
+        groups.append((f"role {r['role_index']}", r["bullets"], m["bullets"], caps["roles"][k], ceiling))
+    for field, bullets, master_bullets, gcaps, ceiling in groups:
+        masters = {b["id"]: b for b in master_bullets}
+        for i, sid in _pair_group(bullets, master_bullets, gcaps):
+            if len(bullets[i]["text"]) > gcaps[sid]:
+                bad.append(f"{field} bullet {i} over its paired capacity")
+        if ceiling is not None and _bullet_chars(bullets) > ceiling:
+            bad.append(f"{field} over its master character total (A3)")
+        seen_ids, seen_text = set(), set()
+        for i, b in enumerate(bullets):
+            mid = b.get("master_id")
+            if mid is not None:
+                if mid not in masters:
+                    bad.append(f"{field} bullet {i} carries {mid}, not a master of this group")
+                else:
+                    if b["text"] != masters[mid]["text"]:
+                        bad.append(f"{field} bullet {i} carries {mid} without its exact text")
+                    if b.get("source_ids") != [mid]:
+                        bad.append(f"{field} bullet {i} carries {mid} with source_ids {b.get('source_ids')}")
+                if mid in seen_ids:
+                    bad.append(f"{field} repeats {mid}")
+                seen_ids.add(mid)
+            else:
+                twin = next((m for m in master_bullets if _same(b["text"], m["text"])), None)
+                if twin:
+                    bad.append(f"{field} bullet {i} matches {twin['id']} but does not carry it")
+            key = _norm(b["text"]).lower()
+            if key in seen_text:
+                bad.append(f"{field} bullet {i} repeats the text of an earlier bullet")
+            seen_text.add(key)
+    if bad:
+        raise FinalInvariantError("; ".join(bad))
 
 
 def tailoring_state(res: dict) -> str:
@@ -1673,8 +1787,10 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
                 else {"items": [], "role_map": {}, "summary_excluded_roles": set()})
         tailored = tailor_resume(client, inv, pool, jd_text, result, personal_context, model=model)
         res = validate_tailoring(inv, pool, tailored)
+        excluded = pool.get("summary_excluded_roles", set())
         apply_role_limits(inv, pool, res)
-        apply_capacity(inv, res)
+        apply_capacity(inv, res, excluded)
+        check_final_invariants(inv, res, excluded)
         state = tailoring_state(res)
         retuned = len(retuned_items(res))
         render_tailored_resume(master, inv, res, resume_new, run_id, state)
@@ -1686,6 +1802,8 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
             reason = model_unavailable_message(model)
         elif isinstance(e, TailoringLoadError):
             reason = f"tailoring source not loaded: {e}"
+        elif isinstance(e, TailoringCheckError):
+            reason = str(e)
         else:
             reason = f"{type(e).__name__}: {e}"
         try:

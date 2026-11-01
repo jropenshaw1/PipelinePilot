@@ -61,7 +61,8 @@ def run(tailored, excluded=frozenset()):
     inv, pl = inventory(), pool(excluded)
     res = fae.validate_tailoring(inv, pl, tailored)
     fae.apply_role_limits(inv, pl, res)
-    fae.apply_capacity(inv, res)
+    fae.apply_capacity(inv, res, pl["summary_excluded_roles"])
+    fae.check_final_invariants(inv, res, pl["summary_excluded_roles"])
     return res
 
 
@@ -472,3 +473,137 @@ def test_garbage_response_reverts_everything_safely():
     assert [b["text"] for b in res["summary_bullets"]] == [b["text"] for b in inv["summary_bullets"]]
     assert all(len(r["bullets"]) == 2 for r in res["roles"])
     assert res["budget"]["reverts"] == []
+
+
+# ── Amendment 2 round-3 fixes: F1 exact text, F2 combined length step, F3 final invariants, F9 structure ──
+
+def test_padded_master_echo_publishes_exact_master_text():
+    """R1: a master bullet echoed with extra whitespace used to stay 'fixed' at its
+    padded length and raise; it now publishes the exact master bullet (F1)."""
+    inv = inventory()
+    master = inv["roles"][0]["bullets"][0]
+    t = master_echo(inv)
+    t["roles"][0]["bullets"][0]["text"] = master["text"].replace(" AWS.", " " * 60 + "AWS.")
+    res = run(t)
+    assert res["roles"][0]["bullets"][0] == fae._master_bullet(master)
+    assert fae.tailoring_state(res) == "tailored"
+
+
+def test_padded_prose_field_publishes_exact_master_text():
+    inv = inventory()
+    t = master_echo(inv)
+    t["summary_paragraph"] = inv["summary_paragraph"]["text"].replace(" ", "  ")
+    res = run(t)
+    assert res["summary_paragraph"] == {"text": inv["summary_paragraph"]["text"], "status": "verified"}
+
+
+def test_padded_pool_echo_publishes_exact_pool_text():
+    """Lexi C2: a verified line that matches a pool item publishes the pool text exactly."""
+    t = master_echo(inventory())
+    t["roles"][0]["bullets"][0] = {"text": "Founded the CMDB across  ~2,000 servers.", "source_ids": ["p-cmdb"]}
+    b = run(t)["roles"][0]["bullets"][0]
+    assert b["text"] == "Founded the CMDB across ~2,000 servers."
+    assert b["status"] == "verified" and b["master_id"] is None
+
+
+def test_summary_bullet_copying_a_role_bullet_passes_final_checks():
+    """Lexi C2: master_id comes only from the summary group, so a verbatim copy of a
+    role bullet keeps its citation, carries no master ID and passes F3."""
+    t = master_echo(inventory())
+    t["summary_bullets"][1] = {"text": "Cut cloud spend 20% in one year.", "source_ids": ["M:0:1"]}
+    b = run(t)["summary_bullets"][1]  # run() applies check_final_invariants
+    assert b == {"text": "Cut cloud spend 20% in one year.", "source_ids": ["M:0:1"],
+                 "status": "verified", "master_id": None}
+
+
+def test_summary_echo_is_the_canonical_master_bullet():
+    t = master_echo(inventory())
+    t["summary_bullets"][0]["source_ids"] = ["M:0:0"]  # cites a role bullet, words the master summary bullet
+    b = run(t)["summary_bullets"][0]
+    assert b == fae._master_bullet(inventory()["summary_bullets"][0])
+
+
+def test_competency_case_change_is_retuned():
+    t = master_echo(inventory())
+    t["competencies"][0] = ["strategy", "Team Building"]
+    line = run(t)["competencies"][0]
+    assert line["terms"] == ["strategy", "Team Building"] and line["status"] == "retuned"
+
+
+def _a3_case():
+    """Gee's round-1 counterexample: masters 180/90/50 (total 320) in a role kept out
+    of the summary; tailored 140/95/80 (total 315) passes A3, then capacity restores
+    the 180-character master and lifts the role over 320."""
+    inv = inventory()
+    masters = [M("M:0:0", 180), M("M:0:1", 90), M("M:0:2", 50)]
+    inv["roles"][0]["bullets"] = masters
+    res = fae.validate_tailoring(inv, pool(), master_echo(inventory()))
+    res["events"].clear()
+    res["roles"][0]["bullets"] = [T(140, ["M:0:0"]), T(95, ["M:0:1"], ch="u"), T(80, ["M:0:2"], ch="v")]
+    return inv, res
+
+
+def test_a3_holds_after_capacity_for_an_excluded_role():
+    """R2 and F2: one combined loop; no bullet removed; both constraints hold."""
+    inv, res = _a3_case()
+    fae.apply_capacity(inv, res, {0})
+    fae.check_final_invariants(inv, res, {0})
+    bullets = res["roles"][0]["bullets"]
+    assert len(bullets) == 3
+    assert fae._bullet_chars(bullets) <= 320
+    assert any("A3" in e["reason"] for e in res["events"])
+    slots = [x for x in res["budget"]["slots"] if x["slot"].startswith("M:0:")]
+    assert [x["used"] for x in sorted(slots, key=lambda x: x["slot"])] == \
+        sorted((len(b["text"]) for b in bullets), reverse=True)  # recorded once, after the loop
+
+
+def test_a3_applies_only_to_excluded_roles():
+    """Gee B1: the same input with the exclusion off is not held to the master total."""
+    inv, res = _a3_case()
+    fae.apply_capacity(inv, res)
+    fae.check_final_invariants(inv, res)
+    assert not any("A3" in e["reason"] for e in res["events"])
+    assert fae._bullet_chars(res["roles"][0]["bullets"]) > 320
+
+
+def test_restore_prefers_a_master_no_other_bullet_cites():
+    """Lexi NB6 and C3: a pool bullet over capacity must not restore the master that a
+    remaining bullet is a rewrite of."""
+    masters = [M("M:0:0", 60), M("M:0:1", 70)]
+    bullets = [T(150, ["p-x"]), T(60, ["M:0:0"], ch="u")]
+    _, reverts = reduce(bullets, masters)
+    assert reverts[0]["master_id"] == "M:0:1"
+
+
+@pytest.mark.parametrize("tamper, message", [
+    (lambda r: r["roles"][0]["bullets"][0].update(text="Built a platform team of 12 engineers on GCP."),
+     "without its exact text"),
+    (lambda r: r["roles"][0]["bullets"][0].update(source_ids=["p-cmdb"]), "with source_ids"),
+    (lambda r: r["roles"][0]["bullets"][0].update(master_id="M:1:0"), "not a master of this group"),
+    (lambda r: r["roles"][0]["bullets"][1].update(master_id=None, source_ids=["p-cmdb"]),
+     "does not carry it"),
+    (lambda r: r["roles"][1]["bullets"][1].update(text="Wrote deployment scripts in PowerShell.",
+                                                  master_id=None, source_ids=["p-cicd"]),
+     "repeats the text"),
+    (lambda r: r["headline"].update(text="Technology Leader | Platforms and Cost | Extra"), "headline over"),
+])
+def test_final_invariants_reject_tampered_results(tamper, message):
+    inv, pl = inventory(), pool()
+    res = run(master_echo(inv))
+    tamper(res)
+    with pytest.raises(fae.FinalInvariantError, match=message):
+        fae.check_final_invariants(inv, res, pl["summary_excluded_roles"])
+
+
+@pytest.mark.parametrize("tamper, message", [
+    (lambda r: r["roles"].pop(), "1 roles against 2"),
+    (lambda r: r["roles"].reverse(), "role_index"),
+    (lambda r: r["competencies"].pop(), "competency line count"),
+    (lambda r: r["roles"][0]["bullets"].append(dict(r["roles"][0]["bullets"][0])), "has 3 bullets"),
+])
+def test_structure_guards_run_before_any_pairing(tamper, message):
+    inv = inventory()
+    res = fae.validate_tailoring(inv, pool(), master_echo(inv))
+    tamper(res)
+    with pytest.raises(fae.StructureError, match=message):
+        fae.apply_capacity(inv, res)

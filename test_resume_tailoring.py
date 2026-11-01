@@ -151,6 +151,19 @@ def test_length_revert_makes_the_run_partial_and_still_publishes(env, monkeypatc
     assert out["state"] == "partial" and out["outcome"] == "published"
 
 
+def test_final_invariant_failure_publishes_master_copy_and_names_it(env, monkeypatch):
+    """Amendment 2 F3: a failed final check fails closed and the message says which check."""
+    master, folder, pool, inv = env
+
+    def fail(*a, **k):
+        raise fae.FinalInvariantError("role 0 bullet 1 over its paired capacity")
+
+    monkeypatch.setattr(fae, "check_final_invariants", fail)
+    out = gen(env, Client(echo(inv)))
+    assert out["state"] == "master-copy" and out["outcome"] == "published"
+    assert "final invariant failed: role 0 bullet 1 over its paired capacity" in out["message"]
+
+
 def test_render_failure_publishes_master_copy(env, monkeypatch):
     master, folder, pool, inv = env
 

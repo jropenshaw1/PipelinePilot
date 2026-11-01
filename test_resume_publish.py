@@ -23,8 +23,10 @@ def tailored_res(inv):
                   for r in inv["roles"]],
     }
     res = fae.validate_tailoring(inv, pool, t)
+    excluded = pool.get("summary_excluded_roles", set())
     fae.apply_role_limits(inv, pool, res)
-    fae.apply_capacity(inv, res)
+    fae.apply_capacity(inv, res, excluded)
+    fae.check_final_invariants(inv, res, excluded)
     return pool, res
 
 
