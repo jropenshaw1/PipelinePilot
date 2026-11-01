@@ -203,14 +203,41 @@ The two systems are cleanly separated. **Job Fit Analyst owns AI reasoning. Pipe
 
 ### Resume Tailoring and the Review Trace
 
-A JFA run tailors the resume in a second model call (ADR-015). The model selects, orders and lightly rewords material that already exists in the master resume or in an approved resume pool; it never adds facts. Python checks every line against its cited sources (numbers and named terms; for role bullets, the leading verb) and replaces or drops any line that fails, so constraints are enforced in code, not requested in the prompt.
+A JFA run tailors the resume in a second model call (ADR-015). The model is told to select, order and lightly reword material from the master resume or an approved resume pool. Python then checks every published line and replaces or drops any line that fails, so the rules below are enforced in code, not only requested in the prompt. The checks are narrower than "no new facts": what they cover, and what they do not, is stated next. Read it before relying on a tailored resume.
+
+#### What the checks guarantee
+
+> The Python checks guarantee only that every digit-bearing number (compared after removing a leading `~` and thousands separators) and every capitalized, non-sentence-initial name (compared case-insensitively, including parts of hyphenated words) in a published line also appears in the cited sources (role and summary bullets) or anywhere in the master resume or approved pool (headline, subtitle, summary paragraph and competency terms). They do not check meaning, ownership verbs past the first word of a role bullet, any verb in summary bullets, lowercase terms, sentence-initial terms (including every single-word competency term), quantities written in words, approximation markers and comparative words (`over`, `nearly`, `up to`), credentials, completion status, causal links between combined sources, or which employer a number belongs to. "Verified" means traceable at the token level, not checked for meaning. Every `retuned` line must be read by the owner against its sources before the resume is sent.
+
+#### How a run works
 
 - **Master and pool.** The master `.docx` (the `.docx` beside the configured resume path) is the source and the template; output keeps its formatting. The optional **Resume Pool Folder** setting (`resume_pool_path`) points to approved pool items (`*.md`) and a `role_map.yaml` that binds them to master roles. Left blank, tailoring uses the master alone. Any problem loading either fails closed: the run publishes an unchanged master copy.
-- **Review trace.** Each run writes `_review/TRACE_DO-NOT-UPLOAD_Company_Role.md` in the opportunity folder, listing every reworded line beside its source and every change the checks made. It sits in a subfolder with that name so it cannot be uploaded in place of the resume. The resume and trace are published as a pair with the same `run_id`; an interrupted publication rolls back or forward on the next run.
+- **Review trace.** Each run writes `_review/TRACE_DO-NOT-UPLOAD_Company_Role.md` in the opportunity folder, listing every reworded line beside its source and every change the checks made. It sits in a subfolder with that name so it cannot be uploaded in place of the resume. The resume and trace are published as a pair with the same `run_id`; an interrupted publication rolls back or forward on the next run. Reworded lines are listed largest growth first, each with its signed growth in characters and percent against a baseline: its longest cited source (bullets), the master paragraph (headline, subtitle, summary paragraph) or the master line (competency lines). "New" means there is no baseline.
 - **Run state.** `tailored` (nothing changed by the checks), `partial` (some lines reverted, replaced or dropped) or `master-copy` (tailoring failed; the master was published). The state appears in the progress message, the trace header and the resume's document properties.
-- **Length capacity** (ADR-015 Amendment 2). Each editable paragraph may grow only up to a character capacity computed from the master on every run, using two constants in `fit_analysis_engine.py`: `RESUME_LINE_MIN_CHARS = 92` and `RESUME_LINE_MAX_CHARS = 111`, the shortest and longest full lines measured on the owner's template. They are a calibrated heuristic, not a page guarantee: recalibrate them if you change the template's font, size or margins, and always confirm page count in Word before sending. A line over capacity reverts to master text; length never deletes a bullet.
+- **Length capacity** (ADR-015 Amendment 2). Each editable paragraph may grow only up to a character capacity computed from the master on every run, using two constants in `fit_analysis_engine.py`: `RESUME_LINE_MIN_CHARS = 92` and `RESUME_LINE_MAX_CHARS = 111`, the shortest and longest full lines measured on the owner's template. They are a calibrated heuristic, not a page guarantee: recalibrate them if you change the template's font, size or margins. A line over capacity reverts to master text; length never deletes a bullet. A role kept out of the summary also stays within its master character total (Amendment 1 A3), checked in the same step as capacity. The prompt sends each paragraph's master length beside its capacity and calls the capacity a ceiling, not a target.
+- **Final checks.** Before the resume is written, Python confirms that every paragraph fits its capacity, that bullet counts stay within the master's, that each role kept out of the summary stays within its master total, that every bullet carrying a master bullet's ID is that bullet's exact text (and a line matching a master bullet of its own group carries its ID), that the headline, subtitle and summary paragraph are the exact master text when marked verified, and that no bullet group repeats a line (compared after collapsing whitespace and lower-casing). Any failure publishes an unchanged master copy, and the trace names the check that failed.
 - **Input limits.** The job description is never truncated: it is sent whole up to 40,000 characters (`JD_MAX_CHARS`), and a longer one stops the run before the credential is retrieved and before any API call or file write (ADR-015 Amendment 3). The master resume is sent whole up to 20,000 characters (`RESUME_MAX_CHARS`).
 - **Model.** The **JFA Model** setting (`jfa_model`, default `claude-opus-5-5`) takes an exact Anthropic model ID and is used for both calls (ADR-016). An unavailable model stops the analysis with a message pointing to the setting; there is no silent fallback.
+- **Before sending.** Read every retuned line in the trace against its sources, then open the resume in Word and confirm the page count. Both are manual: neither is checked by the code.
+
+#### Known limits
+
+Each limit below is a way a tailored line can pass the checks and still be wrong. Owner review of the trace is the control for all of them.
+
+- **T1.** A name at the start of a sentence is not checked, and every single-word competency term counts as sentence-initial, so an unsourced one-word tool can publish. Amendment 4 D1 (pending) addresses competency terms.
+- **T2.** Lowercase tools, practices and scope words are not checked (`terraform`, `showback`, `chargeback`, `global`, `enterprise-wide`).
+- **T3.** Meaning can change while every name and number stays the same; ownership verbs are checked only as the first word of a role bullet, and not at all in summary bullets.
+- **T4.** A number can move to a different metric (a budget becomes savings).
+- **T5.** Two sources can be combined to imply cause, scale or ownership.
+- **T6.** Quantities written in words are not checked (`twenty percent`, `multi-million-dollar`, `dozens`, `double-digit`).
+- **T7.** The headline, subtitle and summary paragraph are checked against the whole master and pool, so a fact from one employer can attach to another; the trace names no source for them.
+- **T8.** Lowercase credential and status words are not checked (`certified`, `licensed`, `board-facing`).
+- **T9.** Completion and hedges can be removed (`proposed` becomes `implemented`, `helped reduce` becomes `reduced`).
+- **T10.** Firsts, superlatives and exclusivity are not checked (`first`, `sole`, `end-to-end`, `from scratch`).
+- **T11.** Dropping a qualifier can invert meaning (`migration away from legacy` becomes `migration of legacy`).
+- **T12.** An approximation can become exact (`~2,000` becomes `2000` or `over 2,000`).
+- **T13.** Short lines may grow to their capacity, mostly with the unchecked word types above. The prompt calls capacity a ceiling, not a target, and the trace lists the largest growth first.
+- **T14.** A role can repeat another role's line word for word when the line traces to its own sources, because duplicate checks run within a role. A fix is planned.
 
 ---
 
