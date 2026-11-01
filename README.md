@@ -207,7 +207,7 @@ A JFA run tailors the resume in a second model call (ADR-015). The model is told
 
 #### What the checks guarantee
 
-> The Python checks guarantee only that every digit-bearing number (compared after removing a leading `~` and thousands separators) and every capitalized, non-sentence-initial name (compared case-insensitively, including parts of hyphenated words) in a published line also appears in the cited sources (role and summary bullets) or anywhere in the master resume or approved pool (headline, subtitle, summary paragraph and competency terms). They do not check meaning, ownership verbs past the first word of a role bullet, any verb in summary bullets, lowercase terms, sentence-initial terms (including every single-word competency term), quantities written in words, approximation markers and comparative words (`over`, `nearly`, `up to`), credentials, completion status, causal links between combined sources, or which employer a number belongs to. "Verified" means traceable at the token level, not checked for meaning. Every `retuned` line must be read by the owner against its sources before the resume is sent.
+> The Python checks guarantee only that every digit-bearing number (compared after removing a leading `~` and thousands separators) and every capitalized, non-sentence-initial name (compared case-insensitively, including parts of hyphenated words) in a published line also appears in the cited sources (role and summary bullets) or anywhere in the master resume or approved pool (headline, subtitle and summary paragraph), and that every competency term appears word for word as a phrase in one master text (headline, subtitle, summary paragraph, a summary bullet, a competency term, a role title or a role bullet; not the pool, company lines or competency labels), not split by punctuation, with a one-word term that has a capital letter matching the master's capitalization and other terms compared case-insensitively. They do not check meaning, ownership verbs past the first word of a role bullet, any verb in summary bullets, lowercase terms and sentence-initial terms outside competency lines, whether a competency phrase meant the same thing where the master used it, quantities written in words, approximation markers and comparative words (`over`, `nearly`, `up to`), credentials, completion status, causal links between combined sources, or which employer a number belongs to. "Verified" means traceable at the token level, not checked for meaning. Every `retuned` line must be read by the owner against its sources before the resume is sent.
 
 #### How a run works
 
@@ -224,8 +224,8 @@ A JFA run tailors the resume in a second model call (ADR-015). The model is told
 
 Each limit below is a way a tailored line can pass the checks and still be wrong. Owner review of the trace is the control for all of them.
 
-- **T1.** A name at the start of a sentence is not checked, and every single-word competency term counts as sentence-initial, so an unsourced one-word tool can publish. Amendment 4 D1 (pending) addresses competency terms.
-- **T2.** Lowercase tools, practices and scope words are not checked (`terraform`, `showback`, `chargeback`, `global`, `enterprise-wide`).
+- **T1.** A name at the start of a sentence is not checked outside competency lines (`Kubernetes migration across teams.` passes as a summary bullet; so does a tool after `e.g.` or as the first word of a role bullet's second sentence). Amendment 4 D2 (pending) addresses it. Competency terms are checked by Amendment 4 D1.
+- **T2.** Lowercase tools, practices and scope words are not checked outside competency lines (`terraform`, `showback`, `chargeback`, `global`, `enterprise-wide`).
 - **T3.** Meaning can change while every name and number stays the same; ownership verbs are checked only as the first word of a role bullet, and not at all in summary bullets.
 - **T4.** A number can move to a different metric (a budget becomes savings).
 - **T5.** Two sources can be combined to imply cause, scale or ownership.
@@ -238,6 +238,7 @@ Each limit below is a way a tailored line can pass the checks and still be wrong
 - **T12.** An approximation can become exact (`~2,000` becomes `2000` or `over 2,000`).
 - **T13.** Short lines may grow to their capacity, mostly with the unchecked word types above. The prompt calls capacity a ceiling, not a target, and the trace lists the largest growth first.
 - **T14.** A role can repeat another role's line word for word when the line traces to its own sources, because duplicate checks run within a role. A fix is planned.
+- **T15.** A competency term can be lifted out of its master context (`evaluated Kubernetes; did not deploy` makes `Kubernetes` a valid term).
 
 ---
 

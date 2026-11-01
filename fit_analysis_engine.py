@@ -829,6 +829,74 @@ def _corpus(inventory: dict, pool: dict) -> list[str]:
     return texts
 
 
+# ADR-015 Amendment 4 D1 rev 3: a competency term is a whole phrase of the master.
+_D1_LEAD = "(\"'["
+_D1_TRAIL = ".,;:!?)\"']"
+
+
+def _d1_tokens(text: str) -> list[tuple[str, bool, bool]]:
+    """(token, leading_stripped, trailing_stripped) per Amendment 4 D1. Splits on
+    whitespace, strips leading ( " ' [ and trailing . , ; : ! ? ) " ' ]; a leading '.'
+    is kept, so .NET, ASP.NET, C++, C#, CI/CD and go-to-market are each one token.
+    A word that is all stripped punctuation leaves no token; the token after it counts
+    as leading-stripped, so no phrase runs across it."""
+    out, gap = [], False
+    for raw in (text or "").split():
+        core = raw.lstrip(_D1_LEAD)
+        tok = core.rstrip(_D1_TRAIL)
+        if not tok:
+            gap = True
+            continue
+        out.append((tok, gap or core != raw, tok != core))
+        gap = False
+    return out
+
+
+def _d1_corpus(inventory: dict) -> list[list[tuple[str, bool, bool]]]:
+    """The master texts D1 matches within, each kept separate: headline, subtitle,
+    summary paragraph, each summary bullet, each competency term, each role title, each
+    role bullet. Not company lines, competency labels or pool items (Amendment 4, Corpus)."""
+    texts = [inventory["headline"]["text"], inventory["subtitle"]["text"],
+             inventory["summary_paragraph"]["text"]]
+    texts += [b["text"] for b in inventory["summary_bullets"]]
+    texts += [t for c in inventory["competencies"] for t in c["terms"]]
+    for r in inventory["roles"]:
+        texts += [r["title"]] + [b["text"] for b in r["bullets"]]
+    return [_d1_tokens(t) for t in texts]
+
+
+def _d1_in_text(words: list, text: list, exact: bool) -> bool:
+    """words equal a run of consecutive tokens of one master text; inside the run only
+    the first token may have lost leading punctuation and only the last trailing."""
+    n = len(words)
+    for i in range(len(text) - n + 1):
+        if all((tok == w if exact else tok.lower() == w.lower())
+               and (j == 0 or not lead) and (j == n - 1 or not trail)
+               for j, ((tok, lead, trail), w) in enumerate(zip(text[i:i + n], words))):
+            return True
+    return False
+
+
+def _d1_check(term: str, corpus, master_terms: set) -> str | None:
+    """None if the term passes D1; "case" if a one-token term with a capital matches a
+    master token only when case is ignored; otherwise the reason it fails."""
+    if term in master_terms:  # the owner's own term always passes (D1, Effect)
+        return None
+    toks = _d1_tokens(term)
+    if not toks:
+        return "no word in the term"
+    if any((j > 0 and lead) or (j < len(toks) - 1 and trail)
+           for j, (_, lead, trail) in enumerate(toks)):
+        return "punctuation inside the term"
+    words = [t for t, _, _ in toks]
+    exact = len(words) == 1 and any(c.isupper() for c in words[0])
+    if any(_d1_in_text(words, text, exact) for text in corpus):
+        return None
+    if exact and any(_d1_in_text(words, text, False) for text in corpus):
+        return "case"
+    return "not a phrase in the master"
+
+
 def _check_bullet(b, allowed, table, role_bullet: bool) -> list[str]:
     """§3.2 checks for one bullet. allowed(source_id) -> reason or None."""
     text = (b or {}).get("text") if isinstance(b, dict) else None
@@ -996,20 +1064,39 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
             events.append({"field": "competencies", "action": "reverted",
                            "reason": "line count differs from the master"})
     else:
+        # Amendment 4 D1 rev 3: duplicates go first, then the phrase and case check. A
+        # one-token term that fails only on case is dropped; any other failure, or a
+        # mix, reverts the whole line to its master terms.
+        d1_corpus = _d1_corpus(inventory)
+        master_terms = {t for c in inventory["competencies"] for t in c["terms"]}
         for c, terms in zip(inventory["competencies"], comp_in):
-            kept = []
+            field = f"competency '{c['label']}'"
+            kept, drops, failures, seen = [], [], [], set()
             for t in terms if isinstance(terms, list) else []:
-                t = t.strip() if isinstance(t, str) else ""
-                problems = _lexical_problems(t, corpus) if t else ["empty"]
-                if problems:
-                    events.append({"field": f"competency '{c['label']}'", "action": "dropped",
-                                   "reason": f"'{t}': " + "; ".join(problems)})
+                if not isinstance(t, str) or not t.strip():
+                    failures.append("empty or non-string term")
+                    continue
+                t = t.strip()
+                key = _norm(t).lower()
+                if key in seen:
+                    drops.append(f"'{t}': repeats an earlier term")
+                    continue
+                seen.add(key)
+                why = _d1_check(t, d1_corpus, master_terms)
+                if why == "case":
+                    drops.append(f"'{t}': capitalized differently in the master")
+                elif why:
+                    failures.append(f"'{t}': {why}")
                 else:
                     kept.append(t)
+            if failures:
+                lines.append({"label": c["label"], "terms": list(c["terms"]), "status": "verified"})
+                events.append({"field": field, "action": "reverted", "reason": "; ".join(failures)})
+                continue
+            events += [{"field": field, "action": "dropped", "reason": r} for r in drops]
             if not kept:
                 lines.append({"label": c["label"], "terms": list(c["terms"]), "status": "verified"})
-                events.append({"field": f"competency '{c['label']}'", "action": "reverted",
-                               "reason": "no terms passed"})
+                events.append({"field": field, "action": "reverted", "reason": "no terms passed"})
             else:
                 same = kept == list(c["terms"])  # Amendment 2 F1: case included
                 lines.append({"label": c["label"], "terms": kept,
@@ -1721,8 +1808,12 @@ Rules (a Python validator enforces them; a bullet that breaks one is replaced or
 
 Headline, subtitle and summary paragraph: rewrite toward the job description using only names,
 tools and numbers that appear somewhere in the master or the pool. Competencies: return one list
-of terms per master competency line, in the master's order; you may reorder, drop, or add terms
-that appear in the master or the pool.
+of terms per master competency line, in the master's order. You may reorder and drop terms. Add a
+term only if it appears in the master resume exactly as a phrase: the same words in the same order,
+not split by punctuation, and for a one-word term with a capital letter, the same capitalization.
+The pool, company lines and competency labels do not count. Do not repeat a term in a line. A
+one-word term that differs only in capitalization is dropped; any other term not in the master
+reverts its whole line to the master terms.
 
 Return bullets in priority order (most relevant first). Respond with a JSON object and nothing
 else, with exactly this structure:

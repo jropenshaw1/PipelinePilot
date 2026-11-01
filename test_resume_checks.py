@@ -231,13 +231,23 @@ def test_prose_field_retune_drawing_on_corpus_passes():
     assert res["headline"]["status"] == "retuned"
 
 
-def test_competency_term_dropped_and_line_count_mismatch():
+@pytest.mark.parametrize("term", ["Terraform", "Cloud Terraform"])
+def test_unsourced_competency_term_reverts_its_line(term):
+    """Amendment 4 D1: a term not in the master reverts the whole line (was a per-term
+    drop that missed the single-word case, T1)."""
     t = master_echo(inventory())
-    # "Terraform" alone is sentence-initial and so not treated as a named term (§3.1);
-    # before Amendment 2 this test passed only because the §6 budget reverted the line.
-    t["competencies"][0] = ["Strategy", "Cloud Terraform", "Team Building"]
+    t["competencies"][0] = ["Team Building", term, "Strategy"]
     res = run(t)
-    assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
+    assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", "Team Building"],
+                                      "status": "verified"}
+    assert [e for e in res["events"] if e["field"] == "competency 'Leadership'"] == [
+        {"field": "competency 'Leadership'", "action": "reverted",
+         "reason": f"'{term}': not a phrase in the master"}]
+    assert fae.tailoring_state(res) == "partial"
+
+
+def test_competency_line_count_mismatch_reverts_every_line():
+    t = master_echo(inventory())
     t["competencies"] = [["Strategy"]]
     res = run(t)
     assert [c["terms"] for c in res["competencies"]] == [c["terms"] for c in inventory()["competencies"]]
@@ -648,12 +658,9 @@ def test_summary_duplicate_text_is_dropped(copy):
 
 # ── Amendment 2 F4 and F10 (commit 3) ──
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="T1: Amendment 4 D1")
 def test_single_word_unsourced_competency_term_does_not_publish():
-    """T1 today: a one-word competency term is sentence-initial, so the §3.1 check does
-    not treat it as a named term and an unsourced 'Terraform' publishes. Amendment 4 D1
-    (F7) fixes this; that commit removes the marker, and an unexpected pass before then
-    turns the suite red."""
+    """T1 for competency terms, closed by Amendment 4 D1 (F7): a one-word term was
+    sentence-initial, so the §3.1 check let an unsourced 'Terraform' publish."""
     t = master_echo(inventory())
     t["competencies"][0] = ["Strategy", "Terraform", "Team Building"]
     assert "Terraform" not in run(t)["competencies"][0]["terms"]
@@ -747,3 +754,145 @@ def test_lines_restored_to_master_text_are_not_retuned_items():
     res = run(t)
     assert res["budget"]["reverts"] and res["roles"][0]["bullets"][1]["status"] == "verified"
     assert _growth(res) == []
+
+
+# ── Amendment 4 D1 rev 3: a competency term is a whole phrase of the master (commit 6, F7) ──
+
+def d1_run(terms, text="Ran release management.", inv=None):
+    """Competency line 0 set to terms; role 1 bullet 1 replaced by a master text that
+    carries (or does not carry) the phrase under test."""
+    inv = inv or inventory()
+    inv["roles"][1]["bullets"][1]["text"] = text
+    t = master_echo(inv)
+    t["competencies"][0] = terms
+    return run(t, inv=inv)
+
+
+def line_events(res):
+    return [e for e in res["events"] if e["field"] == "competency 'Leadership'"]
+
+
+def assert_reverted(res):
+    assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
+    assert [e["action"] for e in line_events(res)] == ["reverted"]
+    assert fae.tailoring_state(res) == "partial"
+
+
+@pytest.mark.parametrize("term, text", [
+    ("Kubernetes", "Ran release management."),                            # Context 2
+    ("Terraform", "Ran release management."),
+    ("terraform", "Ran release management."),                             # lowercase, absent
+    ("Cloud Terraform", "Ran release management."),
+    ("AWS Security", "Ran AWS and security reviews."),                    # separate words
+    ("AWS Security", "Moved to AWS. Security reviews followed."),         # trailing punctuation inside
+    ("AWS Security", "Ran AWS, security reviews."),
+    ("Certified Kubernetes", "Certified engineers on Kubernetes."),
+    ("Go", "Drove go-to-market planning."),
+    ("Go", "Ran Google Workspace."),
+    ("R", "Funded R&D."),
+    ("C", "Wrote C++ services."),
+    ("NET", "Wrote .NET services."),
+    ("R&D AWS", "Drove go-to-market planning across R&D (AWS, Azure)."),  # Lexi round-3 NB1
+    ("AWS Azure", "Moved from AWS ( Azure later)."),                      # no run across a bare bracket
+    ("Jenkins", "Ran release management."),                               # pool only
+    ("Old Co", "Ran release management."),                                # company line only
+    ("Finance", "Ran release management."),                               # competency label only
+    ("Cost Cloud", "Ran release management."),                            # split across headline and subtitle
+    ("Team, Building", "Ran release management."),                        # punctuation inside the term
+])
+def test_d1_planted_term_reverts_its_line(term, text):
+    res = d1_run(["Strategy", term, "Team Building"], text)
+    assert_reverted(res)
+    assert line_events(res)[0]["reason"] == f"'{term}': " + (
+        "punctuation inside the term" if term == "Team, Building" else "not a phrase in the master")
+
+
+@pytest.mark.parametrize("term, text", [
+    ("Kubernetes", "Ran Kubernetes upgrades."),
+    ("Kubernetes", "Ran upgrades (Kubernetes)."),
+    ("Terraform", "Wrote Terraform modules."),
+    ("terraform", "Wrote Terraform modules."),        # one lowercase token: case ignored, published as written
+    ("Cloud Terraform", "Built cloud terraform pipelines."),
+    ("AWS Security", "Ran AWS security reviews."),
+    ("Vendor Management", "Ran vendor management."),
+    ("Go", "Wrote Go services."),
+    (".NET", "Wrote .NET services."),
+    ("ASP.NET", "Built ASP.NET apps."),
+    ("C++", "Wrote C++ code."),
+    ("C#", "Wrote C# code."),
+    ("CI/CD", "Ran CI/CD pipelines."),
+    ("AWS", "Ran release management."),               # role 0: "...engineers on AWS."
+    ("Example Corp", "Ran release management."),      # summary paragraph, not only the company line
+])
+def test_d1_term_that_is_a_master_phrase_passes(term, text):
+    res = d1_run(["Strategy", term, "Team Building"], text)
+    assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", term, "Team Building"],
+                                      "status": "retuned"}
+    assert line_events(res) == []
+
+
+def test_d1_case_only_failure_drops_only_that_term():
+    res = d1_run(["Strategy", "Spark", "Team Building"], "Led spark adoption.")
+    assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
+    assert line_events(res) == [{"field": "competency 'Leadership'", "action": "dropped",
+                                 "reason": "'Spark': capitalized differently in the master"}]
+    assert fae.tailoring_state(res) == "partial"
+
+
+def test_d1_case_only_failure_with_no_terms_left_reverts():
+    res = d1_run(["Spark", "spark"], "Led spark adoption.")
+    assert res["competencies"][0]["terms"] == ["Strategy", "Team Building"]
+    assert [(e["action"], e["reason"]) for e in line_events(res)] == [
+        ("dropped", "'Spark': capitalized differently in the master"),
+        ("dropped", "'spark': repeats an earlier term"),
+        ("reverted", "no terms passed")]
+
+
+def test_d1_case_failure_mixed_with_another_failure_reverts():
+    """Round 3 (Lexi NB3): a case-only failure plus any other failure reverts the line."""
+    res = d1_run(["Strategy", "Spark", "Terraform"], "Led spark adoption.")
+    assert_reverted(res)
+    assert line_events(res)[0]["reason"] == "'Terraform': not a phrase in the master"
+
+
+def test_d1_duplicates_are_removed_before_the_case_check():
+    """Round 3 (Lexi NB4): 'spark' repeats 'Spark' and is dropped first, so the lowercase
+    form cannot survive the case drop of the capitalized one."""
+    res = d1_run(["Strategy", "Spark", "spark"], "Led spark adoption.")
+    assert res["competencies"][0]["terms"] == ["Strategy"]
+    assert [e["reason"] for e in line_events(res)] == [
+        "'Spark': capitalized differently in the master", "'spark': repeats an earlier term"]
+
+
+def test_d1_duplicate_term_is_dropped():
+    res = d1_run(["Strategy", "strategy", "Team Building"])
+    assert res["competencies"][0] == {"label": "Leadership", "terms": ["Strategy", "Team Building"],
+                                      "status": "verified"}
+    assert line_events(res) == [{"field": "competency 'Leadership'", "action": "dropped",
+                                 "reason": "'strategy': repeats an earlier term"}]
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 7, None])
+def test_d1_empty_or_non_string_term_reverts_the_line(bad):
+    """Round 3 (Lexi NB2)."""
+    res = d1_run(["Strategy", bad, "Team Building"])
+    assert_reverted(res)
+    assert line_events(res)[0]["reason"] == "empty or non-string term"
+
+
+def test_d1_owner_term_with_inner_punctuation_passes():
+    """D1 Effect: the owner's own terms can always be selected and reordered, even one
+    whose comma would otherwise break the phrase match."""
+    inv = inventory()
+    inv["competencies"][1]["terms"] = ["FinOps", "Budgeting, Forecasting"]
+    t = master_echo(inv)
+    t["competencies"][1] = ["Budgeting, Forecasting", "FinOps"]
+    res = run(t, inv=inv)
+    assert res["competencies"][1]["terms"] == ["Budgeting, Forecasting", "FinOps"]
+    assert res["events"] == []
+
+
+def test_d1_tokens_strip_rule():
+    assert fae._d1_tokens('(".NET," C++ [CI/CD] go-to-market!)') == [
+        (".NET", True, True), ("C++", False, False), ("CI/CD", True, True), ("go-to-market", False, True)]
+    assert fae._d1_tokens("AWS ( Azure") == [("AWS", False, False), ("Azure", True, False)]
