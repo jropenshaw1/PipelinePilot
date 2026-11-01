@@ -92,10 +92,19 @@ def _response_text(message) -> str:
         raise RuntimeError("The API response contained no text.")
     return text
 
-# Input caps (ADR-015 §9). The resume is never truncated: a longer master
-# stops the run. A longer JD is truncated with a visible warning.
+# Input caps (ADR-015 §9, Amendment 3). Neither input is ever truncated: a
+# longer master or a longer JD stops the run before any API call, so every
+# assessment that completes saw the whole JD.
+# The JD limit is an operational guardrail against a mis-pasted file, sized to
+# the JD lengths seen in practice; it is not a model-capacity or token bound.
+# Provider request-size errors are still reported as ordinary API errors.
 RESUME_MAX_CHARS = 20000
-JD_MAX_CHARS = 12000
+JD_MAX_CHARS = 40000
+
+
+class InputLimitError(RuntimeError):
+    """An input over its ADR-015 §9 cap. Raised before any API call or file
+    write; the message names the size and the limit. Neither input is truncated."""
 
 # Stage definitions for the progress dialog.
 # Each tuple: (stage_id, display_label, subtitle)
@@ -1673,7 +1682,7 @@ _MD = """\
 # Fit Analysis — {company} | {role}
 
 *Generated: {generated_date} | Model: {model}*
-{input_note}
+
 ---
 
 ## Role Summary
@@ -1742,21 +1751,23 @@ def _top_strengths(result: dict) -> list[str]:
             if len(s) > 20][:3]
 
 
-def _apply_input_caps(jd_text: str, resume_text: str) -> tuple[str, str, str]:
-    """Apply ADR-015 §9 caps. Returns (jd_text, resume_text, jd_note).
-    Raises RuntimeError when the resume exceeds its cap (never truncated)."""
+def _apply_input_caps(jd_text: str, resume_text: str) -> tuple[str, str]:
+    """Apply ADR-015 §9 caps (Amendment 3). Returns both texts unchanged.
+    Raises RuntimeError when either exceeds its cap; neither is truncated."""
     if len(resume_text) > RESUME_MAX_CHARS:
-        raise RuntimeError(
+        raise InputLimitError(
             f"Master resume is {len(resume_text):,} characters; the limit is "
             f"{RESUME_MAX_CHARS:,}.\n\nThe resume is never truncated. Shorten the "
             "master resume, then run the analysis again."
         )
-    jd_note = ""
     if len(jd_text) > JD_MAX_CHARS:
-        jd_note = (f"Job description truncated to {JD_MAX_CHARS:,} of "
-                   f"{len(jd_text):,} characters.")
-        jd_text = jd_text[:JD_MAX_CHARS]
-    return jd_text, resume_text, jd_note
+        raise InputLimitError(
+            f"Job description is {len(jd_text):,} characters; the limit is "
+            f"{JD_MAX_CHARS:,}.\n\nThe job description is never truncated, so this run "
+            "stopped before any API call and no files were written. Check the JD file "
+            "for pasted extra content, or run the assessment with Claude directly."
+        )
+    return jd_text, resume_text
 
 
 def _bl(items) -> str:
@@ -1765,7 +1776,7 @@ def _bl(items) -> str:
 
 def write_fit_analysis_md(folder_path: Path, company: str, role: str,
                            job_url, fit_threshold: float, result: dict,
-                           jd_note: str = "", *, model: str) -> Path:
+                           *, model: str) -> Path:
     top_gaps = [g["area"] for g in result.get("gaps", [])[:3]]
     top_strengths = _top_strengths(result)
 
@@ -1804,7 +1815,6 @@ def write_fit_analysis_md(folder_path: Path, company: str, role: str,
         fit_pct=f"{result['fit_score']:.0%}",
         score_justification=result.get("score_justification", ""),
         next_steps=_bl(result.get("next_steps", [])),
-        input_note=f"\n> **Input warning:** {jd_note}\n" if jd_note else "",
     )
 
     out = folder_path / "fit_analysis.md"
@@ -1915,9 +1925,7 @@ def run_fit_analysis(
             # Single API call — all artifacts in one response.
             # company and role passed explicitly so the model has authoritative
             # values as named facts at the top of the user message.
-            jd_text, resume_text, jd_note = _apply_input_caps(jd_text, resume_text)
-            if jd_note:
-                _p("Reading job description...", jd_note, stage="read_inputs")
+            jd_text, resume_text = _apply_input_caps(jd_text, resume_text)
 
             _p("Running fit analysis...", "All agents (single call)", stage="api_call")
             personal_context = _load_context_skill(context_skill_path)
@@ -1932,7 +1940,7 @@ def run_fit_analysis(
             _p("Writing fit_analysis.md...", stage="fit_summary")
             md_path = write_fit_analysis_md(
                 folder_path, company, role, job_url, fit_threshold, result,
-                jd_note=jd_note, model=model,
+                model=model,
             )
 
             _p("Generating fit summary...", stage="fit_summary")
@@ -1970,8 +1978,6 @@ def run_fit_analysis(
                                         tailoring["trace"], ip_path) if p]
             result["resume_tailoring"] = tailoring["message"]
             done = f"{result['fit_score']:.0%} — {recommendation} | Resume: {tailoring['message']}"
-            if jd_note:
-                done += f" | {jd_note}"
             _p("Complete.", done, stage="complete")
             on_success(result, output_files)
 
