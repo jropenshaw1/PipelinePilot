@@ -1,7 +1,7 @@
 # PipelinePilot — Data Dictionary
 
-**Version:** 1.2  
-**Date:** October 28, 2026  
+**Version:** 1.3  
+**Date:** October 31, 2026  
 **Author:** Jonathan Openshaw  
 **Status:** Approved
 
@@ -9,6 +9,7 @@
 - **v1.0** (March 7, 2026) — Initial release
 - **v1.1** (August 7, 2026) — Added `posting_status_log` field (ADR-009). Restored `action_items` to task-only scope (ADR-009). Added "Ghosted" to status lifecycle (ADR-009). Corrected follow-up offset to 14 days with Monday-snap behavior (ADR-010). Added multi-select status filtering (ADR-011). Pursuit tracker columns (`cl_reviewed`, `resume_reviewed`, `jfa_completed`) documented (previously added via migration 006 without Data Dictionary update).
 - **v1.2** (October 28, 2026) — Status model v2 (ADR-014): ten statuses in three groups, Ready added, New / Capturing / In Review retired, Offer no longer terminal, default status Analyzing. Archive on Done: `archived` set with the folder move to the archive root; optional `archive_root` config key; folder-name suffix on reuse. §5.6 renamed Application Checklist Fields to match the Application Queue.
+- **v1.3** (October 31, 2026) — Traceable resume tailoring (ADR-015): `resume_pool_path` config key; the review trace `_review/TRACE_DO-NOT-UPLOAD_Company_Role.md` as a folder artifact; the tailored resume row describes what the run produces. JFA model as a setting (ADR-016): `jfa_model` config key. No database or schema change.
 
 ---
 
@@ -61,7 +62,8 @@ Each `Company_Role` folder is expected to contain the following files:
 | `JD_Company_Role.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details. Filename = `JD_` + `folder_name` + `.docx`. No separate sanitization — folder_name is already clean. |
 | `fit_analysis.md` | Markdown + YAML | Job Fit Analyst skill | No (required for fit indexing) | YAML front-matter metadata + narrative analysis |
 | `fit_analysis.docx` | Word document | Job Fit Analyst skill | No | Human-readable fit analysis for review and demos |
-| `Resume_CompanyName_RoleTitle.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role |
+| `Resume_CompanyName_RoleTitle.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role, edited from a copy of the master `.docx` (ADR-015). Its comments field carries the run's `run_id` and state (`tailored`, `partial` or `master-copy`). Published as a pair with the review trace. |
+| `_review/TRACE_DO-NOT-UPLOAD_CompanyName_RoleTitle.md` | Markdown | Job Fit Analyst run | No | Review trace for the tailored resume (ADR-015): run state, model, master hash, length capacity results, every retuned item beside its source, and every change the checks made. Carries the same `run_id` as the resume. For review only; never uploaded. |
 | `CoverLetter_CompanyName_RoleTitle.docx` | Word document | Job Fit Analyst skill | No | Tailored cover letter for this role |
 
 ---
@@ -208,6 +210,8 @@ Analyzing → Ready → Applied → Pursuing → Interviewing → Offer
 | `follow_up_offset_days` | No | `14` | Days added to the application date before snapping to the next Monday. |
 | `resume_path` | For Job Fit Analyst | — | Path to the resume supplied to the analysis workflow. |
 | `context_skill_path` | No | — | Optional path to personal context used by the analysis workflow. |
+| `jfa_model` | No | `claude-opus-5-5` (`DEFAULT_JFA_MODEL`) | Exact Anthropic model ID used by the analysis call and the resume tailoring call (ADR-016). Blank resolves to the default. Settings → JFA Model. |
+| `resume_pool_path` | No | empty | Folder of approved resume pool items (`*.md`) and `role_map.yaml` used by resume tailoring (ADR-015). Blank tailors from the master alone. Settings → Resume Pool Folder. |
 | `ob_supabase_url` | For OpenBrain | — | OpenBrain Supabase project URL; not a secret. |
 | `agent_vault_account` | For vault-backed features | — | Dashlane agent-vault login account; not a secret. |
 | `ob_key_vault_id` | For OpenBrain | — | Dashlane item ID for the OpenBrain credential; not the credential value. |

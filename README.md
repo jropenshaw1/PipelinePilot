@@ -194,12 +194,23 @@ PipelinePilot integrates with the [Job Fit Analyst](https://github.com/jropensha
 
 - `fit_analysis.docx` -- full Advocate/Auditor narrative for human review
 - `fit_analysis.md` -- YAML front-matter metadata for PipelinePilot indexing
-- `Resume_Company_Role.docx` -- tailored resume optimized for the specific role
+- `Resume_Company_Role.docx` -- tailored resume optimized for the specific role, with its review trace in `_review/` (see below)
 - `CoverLetter_Company_Role.docx` -- tailored cover letter
 
 PipelinePilot parses `fit_analysis.md` to index the score, recommendation, strengths, and gaps. The resume and cover letter are stored in the folder and used directly by the user.
 
 The two systems are cleanly separated. **Job Fit Analyst owns AI reasoning. PipelinePilot owns lifecycle tracking.**
+
+### Resume Tailoring and the Review Trace
+
+A JFA run tailors the resume in a second model call (ADR-015). The model selects, orders and lightly rewords material that already exists in the master resume or in an approved resume pool; it never adds facts. Python checks every line against its cited sources (numbers and named terms; for role bullets, the leading verb) and replaces or drops any line that fails, so constraints are enforced in code, not requested in the prompt.
+
+- **Master and pool.** The master `.docx` (the `.docx` beside the configured resume path) is the source and the template; output keeps its formatting. The optional **Resume Pool Folder** setting (`resume_pool_path`) points to approved pool items (`*.md`) and a `role_map.yaml` that binds them to master roles. Left blank, tailoring uses the master alone. Any problem loading either fails closed: the run publishes an unchanged master copy.
+- **Review trace.** Each run writes `_review/TRACE_DO-NOT-UPLOAD_Company_Role.md` in the opportunity folder, listing every reworded line beside its source and every change the checks made. It sits in a subfolder with that name so it cannot be uploaded in place of the resume. The resume and trace are published as a pair with the same `run_id`; an interrupted publication rolls back or forward on the next run.
+- **Run state.** `tailored` (nothing changed by the checks), `partial` (some lines reverted, replaced or dropped) or `master-copy` (tailoring failed; the master was published). The state appears in the progress message, the trace header and the resume's document properties.
+- **Length capacity** (ADR-015 Amendment 2). Each editable paragraph may grow only up to a character capacity computed from the master on every run, using two constants in `fit_analysis_engine.py`: `RESUME_LINE_MIN_CHARS = 92` and `RESUME_LINE_MAX_CHARS = 111`, the shortest and longest full lines measured on the owner's template. They are a calibrated heuristic, not a page guarantee: recalibrate them if you change the template's font, size or margins, and always confirm page count in Word before sending. A line over capacity reverts to master text; length never deletes a bullet.
+- **Input limits.** The job description is never truncated: it is sent whole up to 40,000 characters (`JD_MAX_CHARS`), and a longer one stops the run before the credential is retrieved and before any API call or file write (ADR-015 Amendment 3). The master resume is sent whole up to 20,000 characters (`RESUME_MAX_CHARS`).
+- **Model.** The **JFA Model** setting (`jfa_model`, default `claude-opus-5-5`) takes an exact Anthropic model ID and is used for both calls (ADR-016). An unavailable model stops the analysis with a message pointing to the setting; there is no silent fallback.
 
 ---
 

@@ -733,7 +733,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1) and October 31, 2026 (Amendments 2 and 3). Implemented October 30–31, 2026, except as noted in Amendments 2 and 3.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1) and October 31, 2026 (Amendments 2 and 3). Implemented October 30–31, 2026; see Implementation Notes.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -875,7 +875,7 @@ The startup consistency check reports (report-only, no repair) any opportunity f
 ### Amendment 2: Per-Paragraph Length Capacity
 
 **Date:** October 31, 2026
-**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2 (redesign after validation), Gee APPROVE_WITH_CHANGES and Mini APPROVE; round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Implementation pending.
+**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2 (redesign after validation), Gee APPROVE_WITH_CHANGES and Mini APPROVE; round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Implemented October 31, 2026 (`1e80b15`).
 **Changes:** ADR-015 §6 (length budget), replaced. Amendment 1 A1 extended to summary bullets (B5). §3 to §5, §5.1, §7, A2 and A3 are unchanged. A3 (character ceiling for minimized roles) stays in characters: it governs prominence, not page fit.
 
 #### Context
@@ -945,7 +945,7 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 ### Amendment 3: The Job Description Is Never Truncated
 
 **Date:** October 31, 2026
-**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2, Mini APPROVE and Gee APPROVE_WITH_CHANGES (Amendment 3 resolved, test and check-order suggestions); round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Revision 2 implemented in `5a1e8ed`; the revision 3 check order and tests are pending.
+**Status:** Accepted (Jonathan Openshaw, October 31, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; round 2, Mini APPROVE and Gee APPROVE_WITH_CHANGES (Amendment 3 resolved, test and check-order suggestions); round 3 confirmation of revision 3, Gee CONFIRM and Mini CONFIRM. Implemented October 31, 2026: revision 2 in `5a1e8ed`, the revision 3 check order and tests in `6b3e7a3`.
 **Changes:** ADR-015 §9 (input caps), JD half. The resume half keeps its behavior and now raises the same exception type.
 
 #### Context
@@ -975,12 +975,19 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 - Input tokens rise for long postings only.
 - Tests: a JD of 40,001 characters raises `InputLimitError` naming 40,001 and 40,000 with the manual-assessment instruction; a JD of exactly 40,000 and one of 21,474 pass unchanged; the resume cap raises `InputLimitError`; a full run with a 40,001-character JD makes no vault call, no analysis or tailoring call, reports one error, and leaves every existing file in the folder byte-identical with unchanged modification times; a successful mocked run passes a JD identical to the loaded file text to both the analysis call and the tailoring call; `fit_analysis.md` has no Input warning line. A test docstring states that the message format (the phrase "never truncated", the actual size and the limit) is asserted so boundary regressions are traceable. Rev 2 tests are implemented and passing; the vault-order assertion and the success-path equality test are new in rev 3.
 
+### Implementation Notes (ADR-015)
+
+Implemented October 30–31, 2026: `5ceb44d` (master parser and pool loader), `0069a71` (checks, fallbacks, role limits and the §6 budget), `ceec44e` (render, trace, recoverable publication), `643e0f7` (tailoring call and run wiring), `af451df` (Resume Pool Folder setting; startup check for interrupted or mismatched pairs), `79f18d2` (trace location), then Amendment 3 (`5a1e8ed`, `6b3e7a3`) and Amendment 2 (`1e80b15`). The decision was built as written, as changed by Amendments 1 to 3, with this difference:
+
+- **Trace location.** The trace is written to `_review/TRACE_DO-NOT-UPLOAD_{Company}_{Role}.md` inside the opportunity folder, not `ResumeTrace_{Company}_{Role}.md` beside the resume, so it cannot be picked up and uploaded in place of the resume. The §5.1 publication contract applies to it unchanged (prepared as `.new`, validated, replaced as a pair with the resume, rolled back or forward from the journal).
+- **Documentation:** Data Dictionary v1.3 (§3 trace artifact, §7 `resume_pool_path`), README and CHANGELOG describe the implemented behavior.
+
 ---
 
 ## ADR-016: JFA Model as a Setting
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Mini APPROVE and Gee APPROVE_WITH_CHANGES; confirmation of revision 2, Gee CONFIRM and Mini CONFIRM. Implementation pending.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Mini APPROVE and Gee APPROVE_WITH_CHANGES; confirmation of revision 2, Gee CONFIRM and Mini CONFIRM. Implemented October 30–31, 2026; see Implementation Notes.
 **Amends:** none. Applies to the analysis call and to the ADR-015 tailoring call.
 
 ### Context
@@ -1024,3 +1031,10 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 - Tests (fake client, no network): empty or whitespace setting resolves to the default; a configured value reaches both calls and both `fit_analysis.md` fields; a response with thinking blocks before the text block parses; several text blocks are joined; `stop_reason` `max_tokens` gives the out-of-tokens message, not a JSON error; `NotFoundError` on the analysis call gives the model-setting message and writes no artifacts; `NotFoundError` on the tailoring call produces a `master-copy` pair with the guidance, and when publication also fails the previous resume/trace pair is retained; a 400 error mentioning the model (unsupported parameter) is reported as a request error without the model-setting message; no remaining reference to a module-level `MODEL`.
 - Sequencing note: Decisions 4 (tailoring stage) and 5 (tailoring call) land with the ADR-015 tailoring call; the rest lands in this ADR's own commit.
 - Sequencing: implemented as its own commit after the ADR-015 defect fixes and before the ADR-015 validation runs, so validation output comes from the model the owner will actually use.
+
+### Implementation Notes
+
+Implemented October 30–31, 2026: `3f530f0` (setting, default `claude-opus-5-5`, text by block type, 32,000-token ceiling, model-not-found message for the analysis call), `643e0f7` (Decisions 4 and 5 for the ADR-015 tailoring call, as sequenced), `000a6e7` (streaming). The decision was built as written, with this addition:
+
+- **Requests are streamed.** The Anthropic SDK refuses a non-streaming request whose `max_tokens` could run past ten minutes, which the 32,000-token ceiling in Decision 5 can. Both calls stream and assemble the final message; text is still taken by block type and `stop_reason` handling is unchanged.
+- **Documentation:** Data Dictionary v1.3 (§7 `jfa_model`), README and CHANGELOG describe the implemented behavior. The agent CMDB row (Decision 6) lives in the owner's private repo.

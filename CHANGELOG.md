@@ -11,6 +11,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Traceable resume tailoring** (ADR-015) -- a second model call tailors the resume from the master `.docx` and an optional approved resume pool (`resume_pool_path`, Settings → Resume Pool Folder). Every line is checked in Python against its cited sources; failures are replaced or dropped. Per-role bullet caps and a summary exclusion flag keep old roles from growing (Amendment 1). Output keeps the master's formatting and is published with a review trace, `_review/TRACE_DO-NOT-UPLOAD_Company_Role.md`, as a recoverable pair sharing a `run_id`. Run state `tailored`, `partial` or `master-copy` is reported in the progress message, trace header and document properties. The startup check reports interrupted or mismatched resume/trace pairs.
+- **Per-paragraph length capacity** (ADR-015 Amendment 2) -- each editable paragraph may grow to a capacity computed from the master (`RESUME_LINE_MIN_CHARS = 92`, `RESUME_LINE_MAX_CHARS = 111`, calibrated to the owner's template); bullets are checked per group by sorted pairing, and an over-capacity line reverts to master text. Length never deletes a bullet. The summary is capped at the master's bullet count.
+- **JFA model as a setting** (ADR-016) -- `jfa_model` config key and Settings → JFA Model; default `claude-opus-5-5`. Used by the analysis and tailoring calls and recorded in `fit_analysis.md`. An unavailable model gives a message pointing to the setting, with no silent fallback.
+
 - **Status model v2** (ADR-014) -- ten statuses in three groups by whose move it is: My move (Analyzing, Ready, Offer), Their move (Applied, Pursuing, Interviewing), Done (Passed, Rejected, Ghosted, Closed). New `Ready` status. `STATUS_GROUPS`, `DONE_STATUSES`, `RETIRED_STATUS_MAP` and `STATUS_FILTER_OPTIONS` in `models.py`. At startup, rows still holding a retired status are mapped (New and Capturing to Analyzing, In Review to Applied) and each change is logged.
 - **Archive on Done** (ADR-014) -- a change to a Done status, through any write path, renames the opportunity folder to the archive root (`001_ArchiveJobSearch` beside the job search root, or config `archive_root`) and sets `archived = 1` in the same operation, inside `database.update_opportunity()`. A failed move changes nothing. A failed database write moves the folder back; if that also fails, the error names both paths and the consistency check lists the record. Guarded by a lock file at `%LOCALAPPDATA%\PipelinePilot\pipi_fs.lock` (stale after 10 minutes when its process is gone) and a check that refuses any resulting path of 260 characters or more.
 - **Save confirmation on Done** -- the desktop detail view asks before saving a change to a Done status. No saves nothing and keeps the window open.
@@ -41,6 +45,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **"Not QFL" line on the import summary** -- thoughts that mention the `[quick-fit-log]` tags in prose but contain no block (for example, Context Rescue handoffs) are listed separately with created date and first line, and are no longer counted as parse failures.
 
 ### Changed
+
+- **The job description is never truncated** (ADR-015 Amendment 3) -- sent whole up to 40,000 characters; a longer JD raises `InputLimitError` and stops the run before the credential is retrieved, any API call or any file write. The master resume limit (20,000) raises the same error. Replaces the 12,000-character JD truncation and its warning line.
+- **Model responses** (ADR-016) -- text is read by content block type, so thinking blocks are ignored; the output ceiling is 32,000 tokens; requests are streamed; a `max_tokens` stop is reported as running out of output tokens rather than as invalid JSON.
 
 - **Opportunities status filter** (ADR-014) -- offers the three groups plus individual statuses and opens on Active (My move and Their move). Done and All include archived records.
 - **Pursuit Tracker renamed Application Queue** (ADR-014) -- lists Ready, then Analyzing; Pursuing removed. The detail section is renamed Application Checklist.
