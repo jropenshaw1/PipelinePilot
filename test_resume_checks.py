@@ -607,3 +607,18 @@ def test_structure_guards_run_before_any_pairing(tamper, message):
     tamper(res)
     with pytest.raises(fae.StructureError, match=message):
         fae.apply_capacity(inv, res)
+
+
+@pytest.mark.parametrize("copy", [
+    "Founded two practices from zero.",          # exact repeat of a master summary bullet
+    "founded two  practices from zero.",         # same text, different case and spacing
+])
+def test_summary_duplicate_text_is_dropped(copy):
+    """Amendment 2 F8: a summary bullet repeating an earlier one is dropped and recorded,
+    so the run stays tailored-or-partial instead of failing the final checks."""
+    t = master_echo(inventory())
+    t["summary_bullets"].insert(1, {"text": copy, "source_ids": ["M:S:0"]})
+    res = run(t)  # run() applies check_final_invariants
+    assert [b["text"] for b in res["summary_bullets"]] == [b["text"] for b in inventory()["summary_bullets"]]
+    assert any(e["reason"] == "same text as a bullet already in the summary" for e in res["events"])
+    assert fae.tailoring_state(res) == "partial"

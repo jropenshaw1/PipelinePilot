@@ -956,11 +956,17 @@ def validate_tailoring(inventory: dict, pool: dict, tailored: dict) -> dict:
 
     summary = []
     summary_used = set()
+    summary_placed = set()  # normalized texts already in the summary (Amendment 2 F8)
     for n, b in enumerate(tailored.get("summary_bullets") or []):
         problems = _check_bullet(b, summary_allowed, table, role_bullet=False)
         if problems:
             events.append({"field": f"summary bullet {n}", "action": "dropped", "reason": "; ".join(problems)})
             continue
+        if _norm(b["text"]).lower() in summary_placed:
+            events.append({"field": f"summary bullet {n}", "action": "dropped",
+                           "reason": "same text as a bullet already in the summary"})
+            continue
+        summary_placed.add(_norm(b["text"]).lower())
         srcs = [table[s]["text"] for s in b["source_ids"]]
         # a summary bullet worded like a master summary bullet becomes that bullet (Amendment 2 B3, F1)
         m = next((m for m in inventory["summary_bullets"]
