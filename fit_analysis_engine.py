@@ -1327,6 +1327,53 @@ def retuned_items(res: dict) -> list[dict]:
     return items
 
 
+def retuned_growth(inventory: dict, pool: dict, res: dict) -> list[dict]:
+    """ADR-015 Amendment 2 F6: the retuned items of retuned_items(), each with its
+    signed growth against a baseline, sorted by signed character growth, largest
+    increase first; ties in document order. Baseline: the longest cited source that
+    exists (bullets), the master paragraph (headline, subtitle, summary paragraph) or
+    the master competency line (competency lines). percent is None ("new") when the
+    baseline is zero or no cited source exists. Lines restored to exact master text
+    are verified, not retuned, so they never appear here."""
+    table = _source_table(inventory, pool or {})
+    items = []
+
+    def add(field, text, source_ids, baseline, basis):
+        growth = len(text) - baseline
+        items.append({"field": field, "text": text, "source_ids": list(source_ids), "baseline": baseline,
+                      "basis": basis, "growth": growth,
+                      "percent": 100.0 * growth / baseline if baseline else None})
+
+    def cited(field, b):
+        known = [s for s in b["source_ids"] if s in table]
+        if not known:
+            add(field, b["text"], b["source_ids"], 0, "no cited source")
+            return
+        sid = max(known, key=lambda s: (len(table[s]["text"]), -known.index(s)))  # tie: first cited
+        add(field, b["text"], b["source_ids"], len(table[sid]["text"]), f"source {sid}")
+
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        if res[key]["status"] == "retuned":
+            add(key, res[key]["text"], [], len(inventory[key]["text"]), "master paragraph")
+    for n, b in enumerate(res["summary_bullets"]):
+        if b["status"] == "retuned":
+            cited(f"summary bullet {n}", b)
+    for c, m in zip(res["competencies"], inventory["competencies"]):
+        if c["status"] == "retuned":
+            add(f"competency '{c['label']}'", _comp_line(c), [], len(_comp_line(m)), "master line")
+    for r in res["roles"]:
+        for n, b in enumerate(r["bullets"]):
+            if b["status"] == "retuned":
+                cited(f"role {r['role_index']} bullet {n}", b)
+    order = {id(it): n for n, it in enumerate(items)}
+    return sorted(items, key=lambda it: (-it["growth"], order[id(it)]))
+
+
+def growth_label(it: dict) -> str:
+    pct = "new" if it["percent"] is None else f"{it['percent']:+.0f}%"
+    return f"{it['growth']:+d} characters ({pct}) against {it['basis']} ({it['baseline']} characters)"
+
+
 # ─────────────────────────────────────────────
 # Resume tailoring (ADR-015): render, trace, publication
 # render_tailored_resume() edits a copy of the master .docx in place so
@@ -1446,7 +1493,7 @@ def write_resume_trace(out_path, *, run_id: str, state: str, company: str, role:
         lines += ["", "The resume is an unchanged copy of the master. Nothing to review."]
     else:
         table = _source_table(inventory, pool or {})
-        items = retuned_items(res)
+        items = retuned_growth(inventory, pool, res)
         b = res.get("budget", {})
         lines.append(f"**retuned items:** {len(items)}")
         if b:
@@ -1455,8 +1502,10 @@ def write_resume_trace(out_path, *, run_id: str, state: str, company: str, role:
         lines += ["", "## Retuned items: review before sending", ""]
         if not items:
             lines.append("_(none: every published line is copied word for word from a source)_")
+        else:
+            lines += ["_Largest growth first. Growth is published length minus the baseline._", ""]
         for it in items:
-            lines += [f"### {it['field']}", "", f"> {it['text']}", ""]
+            lines += [f"### {it['field']}", "", f"> {it['text']}", "", f"- growth: {growth_label(it)}"]
             if it["source_ids"]:
                 for sid in it["source_ids"]:
                     lines.append(f"- source `{sid}`: {table[sid]['text']}")
@@ -1658,10 +1707,13 @@ Rules (a Python validator enforces them; a bullet that breaks one is replaced or
 - No em dashes.
 - A role may not have more bullets than it has on the master. Pool items replace bullets; they never add.
   The summary may not have more bullets than max_summary_bullets.
-- Roles marked "minimized" may not take more characters than they do on the master.
+- Roles marked "minimized" may not take more characters than they do on the master
+  (master_total_characters).
 - Prefer a source's exact text when it already fits the job description. Reword only to move
   the job description's vocabulary into a bullet whose meaning stays the same.
-- Length: every master paragraph has a max_characters limit. The headline, subtitle, summary
+- Length: every master paragraph has a max_characters limit beside its current length,
+  master_characters. max_characters is a hard ceiling, not a target. Do not lengthen a line
+  unless a job-description term needs the room. The headline, subtitle, summary
   paragraph and each competency line ("Label: term | term") must fit their own limit, or they revert
   to the master. Within the summary and within each role, line up your bullets and that group's
   master limits, each sorted longest first; every bullet must fit the limit it lines up with, or
@@ -1695,24 +1747,30 @@ def _tailoring_request(inventory: dict, pool: dict, jd_text: str, result: dict) 
         roles.append({
             "role_index": ri, "title": r["title"], "company_line": r["company_line"],
             "max_bullets": len(r["bullets"]),
-            "master_characters": _bullet_chars(r["bullets"]),
+            "master_total_characters": _bullet_chars(r["bullets"]),
             "minimized": ri in excluded,
-            "master_bullets": [{"id": b["id"], "text": b["text"], "max_characters": caps["roles"][k][b["id"]]}
+            "master_bullets": [{"id": b["id"], "text": b["text"], "master_characters": len(b["text"]),
+                                "max_characters": caps["roles"][k][b["id"]]}
                                for b in r["bullets"]],
             "pool_items": [{"id": it["item_id"], "text": it["text"]}
                            for it in pool.get("items", []) if it["role_index"] == ri],
         })
     payload = {
         "headline": inventory["headline"]["text"],
+        "headline_master_characters": len(inventory["headline"]["text"]),
         "headline_max_characters": caps["headline"],
         "subtitle": inventory["subtitle"]["text"],
+        "subtitle_master_characters": len(inventory["subtitle"]["text"]),
         "subtitle_max_characters": caps["subtitle"],
         "summary_paragraph": inventory["summary_paragraph"]["text"],
+        "summary_paragraph_master_characters": len(inventory["summary_paragraph"]["text"]),
         "summary_paragraph_max_characters": caps["summary_paragraph"],
         "max_summary_bullets": len(inventory["summary_bullets"]),
-        "summary_bullets": [{"id": b["id"], "text": b["text"], "max_characters": caps["summary_bullets"][b["id"]]}
+        "summary_bullets": [{"id": b["id"], "text": b["text"], "master_characters": len(b["text"]),
+                             "max_characters": caps["summary_bullets"][b["id"]]}
                             for b in inventory["summary_bullets"]],
-        "competencies": [{"label": c["label"], "terms": c["terms"], "max_characters": caps["competencies"][n]}
+        "competencies": [{"label": c["label"], "terms": c["terms"], "master_characters": len(_comp_line(c)),
+                          "max_characters": caps["competencies"][n]}
                          for n, c in enumerate(inventory["competencies"])],
         "roles": roles,
         "summary_only_pool_items": [{"id": it["item_id"], "text": it["text"]}

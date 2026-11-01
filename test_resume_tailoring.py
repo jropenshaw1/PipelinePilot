@@ -97,6 +97,25 @@ def test_request_carries_model_ceiling_inventory_and_no_prefill(env):
     assert "temperature" not in kw and "thinking" not in kw
 
 
+def test_request_sends_master_length_beside_every_ceiling(env):
+    """Amendment 2 F6 (Lexi N-3): the ceiling is not presented as a target."""
+    master, folder, pool, inv = env
+    c = Client(echo(inv))
+    gen(env, c)
+    assert "max_characters is a hard ceiling, not a target." in c.calls[0]["system"][0]["text"]
+    body = c.calls[0]["messages"][-1]["content"]
+    payload = json.loads(body[body.index("{"):body.index("\n\nFIT ANALYSIS")])
+    for key in ("headline", "subtitle", "summary_paragraph"):
+        assert payload[f"{key}_master_characters"] == len(payload[key]) <= payload[f"{key}_max_characters"]
+    paras = payload["summary_bullets"] + [b for r in payload["roles"] for b in r["master_bullets"]]
+    assert paras and all(p["master_characters"] == len(p["text"]) <= p["max_characters"] for p in paras)
+    for c_ in payload["competencies"]:
+        assert c_["master_characters"] == len(c_["label"] + ": " + " | ".join(c_["terms"])) <= c_["max_characters"]
+    for r, m in zip(payload["roles"], inv["roles"]):
+        assert r["master_total_characters"] == sum(len(b["text"]) for b in m["bullets"])
+        assert "master_characters" not in r  # one name, one meaning
+
+
 def test_retuned_count_reported(env):
     master, folder, pool, inv = env
     t = echo(inv)

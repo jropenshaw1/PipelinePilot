@@ -686,3 +686,64 @@ def test_cross_role_verbatim_copy_that_traces_to_own_sources_publishes():
     t["roles"][1]["bullets"][1] = {"text": "Ran release management for two teams.", "source_ids": ["M:1:1"]}
     res = run(t, inv=inv)
     assert res["roles"][1]["bullets"][1]["text"] == res["roles"][0]["bullets"][1]["text"]
+
+
+# ── Amendment 2 F6: growth against a baseline (commit 4) ──
+
+def _growth(res, inv=None):
+    return fae.retuned_growth(inv or inventory(), pool(), res)
+
+
+def test_growth_baselines_signs_percent_and_order():
+    inv = inventory()
+    t = master_echo(inv)
+    t["headline"] = "Platform Leader | FinOps and Cost"                          # shorter than master
+    t["roles"][0]["bullets"][0] = {"text": "Built an AWS platform team of 12 engineers in one year.",
+                                   "source_ids": ["M:0:0"]}                     # longer than its source
+    two = "Owned a $5M budget across 10 teams and led teams across two companies."
+    t["summary_bullets"][1] = {"text": two, "source_ids": ["p-cross", "M:S:1"]}  # two sources
+    t["competencies"][0] = ["Team Building", "Strategy"]                         # reordered: no growth
+    t["competencies"][1] = ["Budgeting", "FinOps"]                               # reordered: no growth
+    res = run(t)
+    g = {it["field"]: it for it in _growth(res)}
+    assert set(g) == {it["field"] for it in fae.retuned_items(res)}             # same items, nothing restored
+
+    h = g["headline"]
+    assert (h["baseline"], h["basis"]) == (len(inv["headline"]["text"]), "master paragraph")
+    assert h["growth"] == len("Platform Leader | FinOps and Cost") - len(inv["headline"]["text"]) < 0
+    assert fae.growth_label(h).startswith(f"{h['growth']:+d} characters (-")  # negative shown, with sign
+
+    b = g["role 0 bullet 0"]
+    master_len = len(inv["roles"][0]["bullets"][0]["text"])
+    assert (b["baseline"], b["basis"]) == (master_len, "source M:0:0")
+    assert b["percent"] == pytest.approx(100 * (len(b["text"]) - master_len) / master_len)
+
+    s = g["summary bullet 1"]
+    longest = max(("p-cross", "M:S:1"), key=lambda i: len(fae._source_table(inv, pool())[i]["text"]))
+    assert s["basis"] == f"source {longest}" and s["growth"] == len(two) - s["baseline"]
+
+    c = g["competency 'Leadership'"]
+    assert (c["growth"], c["basis"]) == (0, "master line")
+    order = [it["field"] for it in _growth(res)]
+    growths = [g[f]["growth"] for f in order]
+    assert growths == sorted(growths, reverse=True)                              # signed, largest increase first
+    assert order.index("competency 'Leadership'") < order.index("competency 'Finance'")  # tie: document order
+    assert order[-1] == "headline"                                               # a decrease sorts last
+
+
+def test_growth_without_a_valid_source_is_new():
+    res = run(master_echo(inventory()))
+    res["roles"][0]["bullets"][0].update(text="Built things.", source_ids=["gone"], status="retuned", master_id=None)
+    it = _growth(res)[0]
+    assert (it["baseline"], it["basis"], it["percent"]) == (0, "no cited source", None)
+    assert it["growth"] == len("Built things.")
+    assert fae.growth_label(it) == f"+{len('Built things.')} characters (new) against no cited source (0 characters)"
+
+
+def test_lines_restored_to_master_text_are_not_retuned_items():
+    t = master_echo(inventory())
+    long = " ".join(["Cut cloud spend 20% in one year"] * 4) + "."                # over its capacity
+    t["roles"][0]["bullets"][1] = {"text": long, "source_ids": ["M:0:1"]}
+    res = run(t)
+    assert res["budget"]["reverts"] and res["roles"][0]["bullets"][1]["status"] == "verified"
+    assert _growth(res) == []

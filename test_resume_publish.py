@@ -87,6 +87,23 @@ def test_trace_lists_retuned_items_first_with_sources(tmp_path):
     assert "**retuned items:** 1" in tr
 
 
+def test_trace_lists_retuned_items_by_growth_with_their_baseline(tmp_path):
+    """Amendment 2 F6: largest growth first, each with its growth and baseline."""
+    inv = fae.parse_master_resume(make_master(tmp_path / "m.docx"))
+    pool, res = tailored_res(inv)  # headline retuned shorter than the master
+    longer = "Built a platform team from zero in one year."
+    b = res["roles"][0]["bullets"][0]
+    b.update(text=longer, source_ids=["M:0:0"], status="retuned", master_id=None)
+    tr = fae.write_resume_trace(tmp_path / TR, run_id="20261031T000000Z-0123abcd", state="tailored",
+                                company="Acme", role="Director", model="m",
+                                inventory=inv, pool=pool, res=res).read_text(encoding="utf-8")
+    assert tr.index("### role 0 bullet 0") < tr.index("### headline")
+    grow = len(longer) - len(inv["roles"][0]["bullets"][0]["text"])
+    assert f"- growth: +{grow} characters (" in tr and "against source M:0:0" in tr
+    shrink = len(res["headline"]["text"]) - len(inv["headline"]["text"])
+    assert f"- growth: {shrink} characters (" in tr and "against master paragraph" in tr
+
+
 def test_master_copy_trace_names_the_reason(tmp_path):
     fae.write_resume_trace(tmp_path / TR, run_id="20261031T000000Z-0123abcd", state="master-copy",
                            company="Acme", role="Director", model="m", inventory=None, pool=None,
