@@ -119,6 +119,10 @@ DEFAULT_JFA_MODEL = "claude-opus-5-5"
 
 # Resume tailoring (ADR-015): folder of approved resume pool items and role_map.yaml
 RESUME_POOL_PATH_KEY = "resume_pool_path"
+# Short upload-ready file names: {file_owner}_resume_{Company}.docx and
+# {file_owner}_coverletter_{Company}.docx (ADR-015 amendment, 2026-11-04).
+# Set in the local pipelinepilot.config only, so no name lives in the repo.
+FILE_OWNER_KEY = "file_owner"
 
 # Archive on Done (ADR-014)
 ARCHIVE_ROOT_KEY = "archive_root"

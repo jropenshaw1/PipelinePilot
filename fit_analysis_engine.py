@@ -9,11 +9,14 @@
 # Runs in a background thread. Never blocks the UI.
 # Writes to opportunity folder:
 #   - fit_analysis.md              (YAML → SQLite index)
-#   - _review/TRACE_DO-NOT-UPLOAD_{Company}_{Role}.md  (ADR-015 review trace; in a
-#     subfolder so a file picker never offers it beside the resume)
+#   - _review/TRACE_DO-NOT-UPLOAD_{owner}_resume_{Company}.md  (ADR-015 review
+#     trace; in a subfolder so a file picker never offers it beside the resume)
 #   - FitAnalysis_{Company}.docx
-#   - CoverLetter_{Company}_{Role}.docx
-#   - Resume_{Company}_{Role}.docx
+#   - {owner}_coverletter_{Company}.docx
+#   - {owner}_resume_{Company}.docx
+#   The two upload files use short names because some ATS upload forms reject
+#   long file names (ADR-015 amendment, 2026-11-04). {owner} is the file_owner
+#   config value; blank gives resume_{Company}.docx and coverletter_{Company}.docx.
 #   - InterviewGuide_{Company}_{Role}.docx
 
 import copy
@@ -53,6 +56,20 @@ def _sanitize(text: str) -> str:
     text = _STRIP_CHARS.sub("", text)
     text = _KEEP_CHARS.sub("", text)
     return text
+
+
+# Longest company part in an upload file name. With a short owner prefix the
+# names stay near 40 characters, under the limits ATS upload forms enforce.
+COMPANY_NAME_CAP = 20
+
+
+def upload_file_name(kind: str, company: str, owner: str = "") -> str:
+    """{owner}_{kind}_{Company}.docx for the files uploaded to applications
+    (kind is "resume" or "coverletter"). The company part is sanitized and cut
+    to COMPANY_NAME_CAP characters; a blank owner drops the prefix."""
+    owner = _sanitize(owner or "").lower()
+    stem = f"{kind}_{_sanitize(company)[:COMPANY_NAME_CAP]}"
+    return f"{owner}_{stem}.docx" if owner else f"{stem}.docx"
 
 
 # ─────────────────────────────────────────────
@@ -436,7 +453,8 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
     return out
 
 
-def generate_cover_letter(result: dict, company: str, role: str, folder_path: Path) -> Path:
+def generate_cover_letter(result: dict, company: str, role: str, folder_path: Path,
+                          file_owner: str = "") -> Path:
     doc = Document()
     doc.core_properties.author = ""
 
@@ -509,7 +527,7 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
         sig_p = doc.add_paragraph()  # blank line for signature when no name available
     sig_p.paragraph_format.space_after = Pt(0)
 
-    out = folder_path / f"CoverLetter_{_sanitize(company)}_{_sanitize(role)}.docx"
+    out = folder_path / upload_file_name("coverletter", company, file_owner)
     doc.save(str(out))
     return out
 
@@ -1492,6 +1510,8 @@ PUBLISH_JOURNAL = ".resume_publish.json"
 # uploaded to an application by mistake in place of the resume.
 TRACE_DIR = "_review"
 TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD_"
+# A trace stem in the short-name form ({owner}_resume_{Company} or resume_{Company}).
+_SHORT_RESUME_STEM = re.compile(r"(^|_)resume_", re.I)
 _RUN_ID_RE = re.compile(r"run_id=([0-9TZ]+-[0-9a-f]{8})")
 _TRACE_RUN_ID_RE = re.compile(r"^\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`", re.M)
 
@@ -1773,7 +1793,8 @@ def folder_resume_problems(folder) -> list[str]:
         return ["interrupted resume publication"]
     problems = []
     for trace in sorted((folder / TRACE_DIR).glob(TRACE_PREFIX + "*.md")):
-        resume_name = "Resume_" + trace.name[len(TRACE_PREFIX):-len(".md")] + ".docx"
+        stem = trace.name[len(TRACE_PREFIX):-len(".md")]
+        resume_name = (stem if _SHORT_RESUME_STEM.search(stem) else "Resume_" + stem) + ".docx"
         problem = resume_pair_problem(folder, resume_name, f"{TRACE_DIR}/{trace.name}")
         if problem:
             problems.append(problem)
@@ -1935,14 +1956,15 @@ def _master_docx_path(resume_path: str) -> Path:
 
 def generate_tailored_resume(result: dict, company: str, role: str, folder_path: Path,
                              resume_path: str, *, client, model: str, jd_text: str,
-                             personal_context: str = "", resume_pool_path: str = "") -> dict:
+                             personal_context: str = "", resume_pool_path: str = "",
+                             file_owner: str = "") -> dict:
     """ADR-015: tailor, check, render and publish the resume with its trace.
     Returns {"resume", "trace", "state", "retuned", "outcome", "message"}.
     Any tailoring failure publishes a master copy with a trace naming why."""
     folder_path = Path(folder_path)
     master = _master_docx_path(resume_path)
-    resume_name = f"Resume_{_sanitize(company)}_{_sanitize(role)}.docx"
-    trace_name = f"{TRACE_DIR}/{TRACE_PREFIX}{_sanitize(company)}_{_sanitize(role)}.md"
+    resume_name = upload_file_name("resume", company, file_owner)
+    trace_name = f"{TRACE_DIR}/{TRACE_PREFIX}{resume_name[:-len('.docx')]}.md"
     notes = []
     recovered = recover_resume_publication(folder_path)
     if recovered:
@@ -2253,6 +2275,7 @@ def run_fit_analysis(
     context_skill_path: str = "",  # path to personal SKILL.md; omit for neutral output
     model: str = "",               # ADR-016: jfa_model setting; blank means the default
     resume_pool_path: str = "",    # ADR-015: approved resume pool folder; blank = master only
+    file_owner: str = "",          # prefix for the upload file names; blank = none
 ) -> threading.Thread:
 
     model = resolve_model(model)
@@ -2330,13 +2353,14 @@ def run_fit_analysis(
             fa_path = generate_fit_summary(result, company, role, folder_path)
 
             _p("Generating cover letter...", stage="cover_letter")
-            cl_path = generate_cover_letter(result, company, role, folder_path)
+            cl_path = generate_cover_letter(result, company, role, folder_path, file_owner)
 
             _p("Tailoring resume...", "Second call: select, check and publish", stage="resume")
             tailoring = generate_tailored_resume(
                 result, company, role, folder_path, resume_path,
                 client=client, model=model, jd_text=jd_text,
                 personal_context=personal_context, resume_pool_path=resume_pool_path,
+                file_owner=file_owner,
             )
             _p("Tailored resume", tailoring["message"], stage="resume")
 

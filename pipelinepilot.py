@@ -38,6 +38,7 @@ from models import (
     DEFAULT_JFA_MODEL,
     JFA_MODEL_KEY,
     RESUME_POOL_PATH_KEY,
+    FILE_OWNER_KEY,
 )
 
 # Date fields entered by hand in the detail view (YYYY-MM-DD)
@@ -2695,6 +2696,7 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
             context_skill_path=self.cfg.get("context_skill_path", ""),
             model=self.cfg.get(JFA_MODEL_KEY, ""),
             resume_pool_path=self.cfg.get(RESUME_POOL_PATH_KEY, ""),
+            file_owner=self.cfg.get(FILE_OWNER_KEY, ""),
         )
 
     def _handle_progress(self, step: str, detail: str = "", stage: str = None):

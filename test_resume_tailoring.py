@@ -72,14 +72,15 @@ def files(folder):
     return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
 
 
-TRACE = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
+RES = "resume_Acme.docx"
+TRACE = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}resume_Acme.md"
 
 
 def test_tailored_run_publishes_pair_with_matching_run_id(env):
     master, folder, pool, inv = env
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "tailored" and out["outcome"] == "published"
-    assert files(folder) == ["Resume_Acme_Director.docx", TRACE]
+    assert files(folder) == [TRACE, RES]
     assert out["trace"] == folder / TRACE
     assert fae.resume_run_id(out["resume"]) == fae.trace_run_id(out["trace"])
     assert "0 retuned items need review; published" in out["message"]
@@ -212,8 +213,8 @@ def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     out = gen(env, Client(echo(inv)))
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and out["resume"] is None
-    assert files(folder) == ["Resume_Acme_Director.docx", TRACE]
-    assert fae.resume_run_id(folder / "Resume_Acme_Director.docx") == old
+    assert files(folder) == [TRACE, RES]
+    assert fae.resume_run_id(folder / RES) == old
 
 
 def test_interrupted_publication_is_recovered_first(env):
@@ -221,7 +222,7 @@ def test_interrupted_publication_is_recovered_first(env):
     gen(env, Client(echo(inv)))
     (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(
         {"run_id": "20261031T000000Z-deadbeef", "phase": "replacing",
-         "final": ["Resume_Acme_Director.docx", TRACE],
+         "final": [RES, TRACE],
          "new": ["Resume_Acme_Director.docx.new", TRACE + ".new"]}), encoding="utf-8")
     out = gen(env, Client(echo(inv)))
     assert out["outcome"] == "published"
@@ -254,7 +255,7 @@ def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(e
     out = gen(env, Client(exc=e), model="claude-gone-1")
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and "JFA Model" in out["message"]
-    assert fae.resume_run_id(folder / "Resume_Acme_Director.docx") == old
+    assert fae.resume_run_id(folder / RES) == old
 
 
 # ── Amendment 2 F10: the round-2 regressions end to end ──
@@ -320,3 +321,16 @@ def test_r2_minimized_role_holds_a3_after_capacity_and_publishes(tmp_path):
     assert published == masters  # every rewrite was restored by capacity or A3
     trace = out["trace"].read_text(encoding="utf-8")
     assert "A3" in trace and "master-copy" not in trace
+
+
+def test_owner_prefix_names_resume_and_trace(env):
+    """ADR-015 amendment (2026-11-04): short upload names; the trace is named for its resume."""
+    master, folder, pool, inv = env
+    out = fae.generate_tailored_resume(
+        RESULT, "Acme Health & Co.", "Director", folder, str(master), client=Client(echo(inv)),
+        model="claude-test-1", jd_text="We want platforms.", resume_pool_path=str(pool),
+        file_owner="Openshaw")
+    assert out["outcome"] == "published"
+    assert files(folder) == ["_review/TRACE_DO-NOT-UPLOAD_openshaw_resume_AcmeHealthCo.md",
+                             "openshaw_resume_AcmeHealthCo.docx"]
+    assert fae.folder_resume_problems(folder) == []
