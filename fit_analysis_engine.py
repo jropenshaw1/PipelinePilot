@@ -9,7 +9,7 @@
 # Runs in a background thread. Never blocks the UI.
 # Writes to opportunity folder:
 #   - fit_analysis.md              (YAML → SQLite index)
-#   - _review/TRACE_DO-NOT-UPLOAD_{owner}_resume_{Company}.md  (ADR-015 review
+#   - _review/TRACE_DO-NOT-UPLOAD-{owner}_resume_{Company}.md  (ADR-015 review
 #     trace; in a subfolder so a file picker never offers it beside the resume)
 #   - FitAnalysis_{Company}.docx
 #   - {owner}_coverletter_{Company}.docx
@@ -58,16 +58,20 @@ def _sanitize(text: str) -> str:
     return text
 
 
-# Longest company part in an upload file name. With a short owner prefix the
-# names stay near 40 characters, under the limits ATS upload forms enforce.
+# Longest company and owner parts in an upload file name. At both caps the
+# longest name is 12 + 1 + 11 + 1 + 20 + 5 = 50 characters (cover letter);
+# with an 8-character owner, 46.
 COMPANY_NAME_CAP = 20
+OWNER_NAME_CAP = 12
 
 
 def upload_file_name(kind: str, company: str, owner: str = "") -> str:
     """{owner}_{kind}_{Company}.docx for the files uploaded to applications
     (kind is "resume" or "coverletter"). The company part is sanitized and cut
-    to COMPANY_NAME_CAP characters; a blank owner drops the prefix."""
-    owner = _sanitize(owner or "").lower()
+    to COMPANY_NAME_CAP characters and the owner to OWNER_NAME_CAP; a blank
+    owner drops the prefix. Any owner value is read as text, so a number in
+    the config cannot stop a run partway through."""
+    owner = _sanitize(str(owner or "")).lower()[:OWNER_NAME_CAP]
     stem = f"{kind}_{_sanitize(company)[:COMPANY_NAME_CAP]}"
     return f"{owner}_{stem}.docx" if owner else f"{stem}.docx"
 
@@ -1509,9 +1513,13 @@ PUBLISH_JOURNAL = ".resume_publish.json"
 # The trace sits in a subfolder under a name that says what it is, so it is not
 # uploaded to an application by mistake in place of the resume.
 TRACE_DIR = "_review"
-TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD_"
-# A trace stem in the short-name form ({owner}_resume_{Company} or resume_{Company}).
-_SHORT_RESUME_STEM = re.compile(r"(^|_)resume_", re.I)
+# A trace is named for its resume: TRACE_PREFIX + resume stem + ".md". Traces
+# written before the short upload names use LEGACY_TRACE_PREFIX + {Company}_{Role}
+# and pair with Resume_{Company}_{Role}.docx. The two prefixes differ in the
+# character after UPLOAD ("-" vs "_"), so the prefix alone says how to pair a
+# trace and the two names can never be the same file (ADR-015 Amendment 5).
+TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD-"
+LEGACY_TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD_"
 _RUN_ID_RE = re.compile(r"run_id=([0-9TZ]+-[0-9a-f]{8})")
 _TRACE_RUN_ID_RE = re.compile(r"^\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`", re.M)
 
@@ -1785,16 +1793,22 @@ def recover_resume_publication(folder) -> str | None:
 
 def folder_resume_problems(folder) -> list[str]:
     """Every resume/trace problem in one opportunity folder, for the startup
-    check (report only). Pairs are found by file name, so no record lookup."""
+    check (report only). Pairs are found by file name, so no record lookup:
+    a trace is named for its resume (TRACE_PREFIX), and a trace from before
+    the short names (LEGACY_TRACE_PREFIX) pairs with Resume_{Company}_{Role}.docx."""
     folder = Path(folder)
     if not folder.is_dir():
         return []
     if (folder / PUBLISH_JOURNAL).exists():
         return ["interrupted resume publication"]
     problems = []
-    for trace in sorted((folder / TRACE_DIR).glob(TRACE_PREFIX + "*.md")):
-        stem = trace.name[len(TRACE_PREFIX):-len(".md")]
-        resume_name = (stem if _SHORT_RESUME_STEM.search(stem) else "Resume_" + stem) + ".docx"
+    for trace in sorted((folder / TRACE_DIR).glob("TRACE_DO-NOT-UPLOAD*.md")):
+        if trace.name.startswith(TRACE_PREFIX):
+            resume_name = trace.name[len(TRACE_PREFIX):-len(".md")] + ".docx"
+        elif trace.name.startswith(LEGACY_TRACE_PREFIX):
+            resume_name = "Resume_" + trace.name[len(LEGACY_TRACE_PREFIX):-len(".md")] + ".docx"
+        else:
+            continue
         problem = resume_pair_problem(folder, resume_name, f"{TRACE_DIR}/{trace.name}")
         if problem:
             problems.append(problem)

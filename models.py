@@ -121,7 +121,7 @@ DEFAULT_JFA_MODEL = "claude-opus-5-5"
 RESUME_POOL_PATH_KEY = "resume_pool_path"
 # Short upload-ready file names: {file_owner}_resume_{Company}.docx and
 # {file_owner}_coverletter_{Company}.docx (ADR-015 amendment, 2026-11-04).
-# Set in the local pipelinepilot.config only, so no name lives in the repo.
+# Kept in the local pipelinepilot.config (set in Settings), so no name lives in the repo.
 FILE_OWNER_KEY = "file_owner"
 
 # Archive on Done (ADR-014)

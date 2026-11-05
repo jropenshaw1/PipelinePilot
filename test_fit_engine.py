@@ -154,3 +154,40 @@ def test_successful_run_sends_the_identical_full_jd_to_both_calls(tmp_path, monk
     assert errors == [] and len(done) == 1
     assert len(jd) == 21474
     assert seen["analysis"] == jd and seen["tailor"] == jd
+
+
+def test_run_passes_file_owner_to_cover_letter_and_resume(tmp_path, monkeypatch):
+    """ADR-015 Amendment 5: the file_owner setting reaches both upload-file generators."""
+    pytest.importorskip("anthropic")
+    folder = tmp_path / "Acme_Director"
+    folder.mkdir()
+    (folder / "JD_Acme_Director.txt").write_text("We want platforms. " * 20, encoding="utf-8")
+    resume = tmp_path / "resume.md"
+    resume.write_text("r" * 300, encoding="utf-8")
+    seen = {}
+
+    def cover_letter(result, company, role, folder_path, file_owner=""):
+        seen["cover_letter"] = file_owner
+
+    def tailored(*a, file_owner="", **k):
+        seen["resume"] = file_owner
+        return {"resume": None, "trace": None, "state": "master-copy", "retuned": 0,
+                "outcome": "published", "message": "stub"}
+
+    monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: "key")
+    monkeypatch.setattr(fae.database, "get_opportunity",
+                        lambda db, name: {"company_name": "Acme", "role_title": "Director",
+                                          "job_url": None, "status": "New"})
+    monkeypatch.setattr(fae.database, "update_opportunity", lambda *a, **k: None)
+    monkeypatch.setattr(fae, "_call_api", lambda *a, **k: _result("Led the datacenter exit across many teams."))
+    monkeypatch.setattr(fae, "generate_cover_letter", cover_letter)
+    monkeypatch.setattr(fae, "generate_tailored_resume", tailored)
+    for name in ("generate_fit_summary", "generate_interview_guide"):
+        monkeypatch.setattr(fae, name, lambda *a, **k: None)
+    errors, done = [], []
+    t = fae.run_fit_analysis(tmp_path / "x.db", str(tmp_path), "Acme_Director", str(resume), 0.65,
+                             on_success=lambda r, f: done.append(f), on_error=errors.append,
+                             model="claude-test-1", file_owner="openshaw")
+    t.join(10)
+    assert errors == [] and len(done) == 1
+    assert seen == {"cover_letter": "openshaw", "resume": "openshaw"}

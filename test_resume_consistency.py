@@ -7,7 +7,7 @@ from test_archive import _opp, roots  # noqa: F401  (fixture)
 from test_resume_sources import make_master
 
 RES = "Resume_Acme_DirectorIT.docx"
-TR = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_DirectorIT.md"
+TR = f"{fae.TRACE_DIR}/{fae.LEGACY_TRACE_PREFIX}Acme_DirectorIT.md"
 A, B = "20261030T000000Z-0000000a", "20261031T000000Z-0000000b"
 
 

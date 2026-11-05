@@ -223,11 +223,14 @@ def test_interrupted_publication_is_recovered_first(env):
     (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(
         {"run_id": "20261031T000000Z-deadbeef", "phase": "replacing",
          "final": [RES, TRACE],
-         "new": ["Resume_Acme_Director.docx.new", TRACE + ".new"]}), encoding="utf-8")
+         "new": [RES + ".new", TRACE + ".new"]}), encoding="utf-8")
+    (folder / (RES + ".new")).write_bytes(b"staged resume from the interrupted run")
+    (folder / (TRACE + ".new")).write_text("staged trace from the interrupted run", encoding="utf-8")
     out = gen(env, Client(echo(inv)))
     assert out["outcome"] == "published"
     assert not (folder / fae.PUBLISH_JOURNAL).exists()
     assert "Previous resume restored" in out["message"]
+    assert files(folder) == [TRACE, RES]  # staged .new files from the interrupted run are gone
 
 
 # The SDK tests below take the api_error fixture (conftest.py), which skips only them. A
@@ -331,6 +334,6 @@ def test_owner_prefix_names_resume_and_trace(env):
         model="claude-test-1", jd_text="We want platforms.", resume_pool_path=str(pool),
         file_owner="Openshaw")
     assert out["outcome"] == "published"
-    assert files(folder) == ["_review/TRACE_DO-NOT-UPLOAD_openshaw_resume_AcmeHealthCo.md",
+    assert files(folder) == ["_review/TRACE_DO-NOT-UPLOAD-openshaw_resume_AcmeHealthCo.md",
                              "openshaw_resume_AcmeHealthCo.docx"]
     assert fae.folder_resume_problems(folder) == []

@@ -779,6 +779,28 @@ class PipelinePilotApp(ctk.CTk):
             rpf_row, text="Browse", command=self._browse_resume_pool, width=90, fg_color=C_PANEL,
         ).pack(side="left")
 
+        # ── File Name Owner (ADR-015 Amendment 5) ──
+        self._settings_section(frame, "File Name Owner")
+
+        fo_frame = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=10)
+        fo_frame.pack(fill="x", pady=(0, 20))
+        fo_inner = ctk.CTkFrame(fo_frame, fg_color="transparent")
+        fo_inner.pack(fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            fo_inner,
+            text="Optional — a short name (for example your last name) that starts the resume and\n"
+                 "cover letter file names: smith_resume_Acme.docx. Letters, digits and hyphens are\n"
+                 "kept, lower-cased, up to 12 characters. Leave blank for resume_Acme.docx.",
+            text_color=C_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._file_owner_var = ctk.StringVar(value=str(self.cfg.get(FILE_OWNER_KEY, "") or ""))
+        ctk.CTkEntry(
+            fo_inner, textvariable=self._file_owner_var, width=200, font=ctk.CTkFont(size=11),
+        ).pack(anchor="w")
+
         # ── JFA Model (ADR-016) ──
         self._settings_section(frame, "JFA Model")
 
@@ -1842,6 +1864,7 @@ class PipelinePilotApp(ctk.CTk):
         self.cfg["context_skill_path"] = self._context_skill_var.get().strip()
         self.cfg[JFA_MODEL_KEY] = self._jfa_model_var.get().strip()
         self.cfg[RESUME_POOL_PATH_KEY] = self._resume_pool_var.get().strip()
+        self.cfg[FILE_OWNER_KEY] = self._file_owner_var.get().strip()
         self.cfg[OB_SUPABASE_URL_KEY] = self._ob_url_var.get().strip()
         self.cfg[AGENT_VAULT_ACCOUNT_KEY] = self._vault_account_var.get().strip()
         self.cfg[OB_KEY_VAULT_ID_KEY] = self._ob_vault_id_var.get().strip()
@@ -2461,7 +2484,7 @@ class ConsistencyWindow(ctk.CTkToplevel):
         "active_only_archived": "Folder in job search root, record archived",
         "both_or_neither": "Folder in both roots, or in neither (resolve by hand)",
         "folder_no_record": "Folder with no record (report only: add a record or move the folder)",
-        "resume_pair": "Resume and trace need attention (report only: run the analysis again to resolve)",
+        "resume_pair": "Resume and trace need attention (report only: first check for a renamed or removed resume; re-running the analysis regenerates the resume)",
     }
 
     def __init__(self, parent, db_path, issues: dict):
