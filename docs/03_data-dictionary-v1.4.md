@@ -1,6 +1,8 @@
 # PipelinePilot — Data Dictionary
 
-**Version:** 1.3  
+- **v1.4** (November 4, 2026) — Short upload file names (ADR-015 Amendment 5): \file_owner` config key; `owner_resume_Company.docx` / `owner_coverletter_Company.docx`; trace prefix `TRACE_DO-NOT-UPLOAD-` (hyphen); earlier folders keep the underscore form. No database or schema change.`
+
+**Version:** 1.4  
 **Date:** October 31, 2026  
 **Author:** Jonathan Openshaw  
 **Status:** Approved
@@ -210,7 +212,8 @@ Analyzing → Ready → Applied → Pursuing → Interviewing → Offer
 | `follow_up_offset_days` | No | `14` | Days added to the application date before snapping to the next Monday. |
 | `resume_path` | For Job Fit Analyst | — | Path to the resume supplied to the analysis workflow. |
 | `context_skill_path` | No | — | Optional path to personal context used by the analysis workflow. |
-| `jfa_model` | No | `claude-opus-5-5` (`DEFAULT_JFA_MODEL`) | Exact Anthropic model ID used by the analysis call and the resume tailoring call (ADR-016). Blank resolves to the default. Settings → JFA Model. |
+| `jfa_model` | No | `claude-opus-5-5` (`DEFAULT_JFA_MODEL`) | Exact Anthropic model ID used by the analysis call and the resume tailoring call (ADR-016). empty resolves to the default. Settings → JFA Model. |
+| `file_owner` | No | blank | Owner name at the start of the resume and cover letter file names (ADR-015 Amendment 5). Lower-cased and cut to 12 characters (`OWNER_NAME_CAP`); blank leaves it out (`resume_Company.docx`). Stored only in the local `pipelinepilot.config`. Settings → File Name Owner. |
 | `resume_pool_path` | No | empty | Folder of approved resume pool items (`*.md`) and `role_map.yaml` used by resume tailoring (ADR-015). Blank tailors from the master alone. Settings → Resume Pool Folder. |
 | `ob_supabase_url` | For OpenBrain | — | OpenBrain Supabase project URL; not a secret. |
 | `agent_vault_account` | For vault-backed features | — | Dashlane agent-vault login account; not a secret. |

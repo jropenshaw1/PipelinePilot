@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 ## [Unreleased]
+- **Short upload file names** (ADR-015 Amendment 5) -- the resume and cover letter are saved as \owner_resume_Company.docx` and `owner_coverletter_Company.docx` (owner from Settings → File Name Owner, up to 12 characters; Company up to 20; 50 characters at most). Review traces are now `_review/TRACE_DO-NOT-UPLOAD-owner_resume_Company.md`; folders analyzed earlier keep their names and still pair at startup.`
 
 ### Added
 
