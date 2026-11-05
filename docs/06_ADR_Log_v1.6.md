@@ -734,7 +734,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1), October 31, 2026 (Amendments 2 and 3) and November 1, 2026 (Amendment 4, D1). Implemented October 30–31, 2026; see Implementation Notes.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1), October 31, 2026 (Amendments 2 and 3), November 1, 2026 (Amendment 4, D1) and November 4, 2026 (Amendment 5, proposed). Implemented October 30–31, 2026; see Implementation Notes.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -995,6 +995,23 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 **Accepted residual risks.** A phrase can be lifted out of its master context (README T15). Case-insensitive matching can change a word's capitalization (README T16).
 
 **Alternatives considered.** Token-level matching (rev 1) and word-character boundaries (rev 2) were rejected in review: the first passes words found in unrelated places, the second lets `Go` match inside `go-to-market` and `R` inside `R&D`. Reverting a line for edge punctuation was rejected for publishing the cleaned term (Jonathan, November 1, 2026).
+
+### Amendment 5: Short Upload File Names
+
+**Status:** Proposed (Jonathan Openshaw, November 4, 2026), pending the multi-agent code review (Gee, Mini, Lexi) through OpenBrain and his final call at the merge gate.
+**Changes:** the resume and cover letter file names (§5 publication names), and how the startup check (§5.1) pairs a trace with its resume. The resume content, checks, trace content and publication protocol are unchanged.
+
+**Context.** Two ATS upload forms (GE Aerospace, November 3, 2026, and one earlier) rejected `Resume_{Company}_{Role}.docx` and `CoverLetter_{Company}_{Role}.docx` for length; the GE resume name was 57 characters, and agency folders run past 70. Jonathan shortened the names by hand to upload them. The startup check derives the resume name from the trace name, so the renamed GE resume was reported as "resume trace without its resume" although it was in the folder.
+
+**Decision.**
+- The two upload files are named `{owner}_resume_{Company}.docx` and `{owner}_coverletter_{Company}.docx`. `{owner}` is the new `file_owner` setting, read from the local `pipelinepilot.config` only so no name is committed to the public repo; it is sanitized and lower-cased, and a blank value drops the prefix (`resume_{Company}.docx`). The role is dropped from both names: the folder already identifies the role.
+- `{Company}` is the existing sanitized company name cut to `COMPANY_NAME_CAP = 20` characters. With an 8-character owner the longest names are 41 (resume) and 46 (cover letter) characters.
+- The trace is named for its resume: `_review/TRACE_DO-NOT-UPLOAD_{owner}_resume_{Company}.md`. The startup check pairs a trace whose stem contains `resume_` (at the start or after `_`) with `{stem}.docx`, and any other trace with `Resume_{stem}.docx`, so folders analyzed before this change keep pairing as before.
+- FitAnalysis and InterviewGuide names are unchanged; they are not uploaded.
+
+**Alternatives considered.** Recording the published resume name inside the trace, or pairing with the folder's single resume file, would also stop false reports after a hand rename (Jonathan's option 2); not chosen, because short names remove the reason to rename. Keeping the role in the name was rejected: it is what makes the names long. Hardcoding the owner name was rejected: the repo is public.
+
+**Consequences.** Re-running an analysis in a folder created before this change publishes the new names beside the old files; the old resume and cover letter stay until removed by hand, and the old trace keeps being checked against the old resume. A folder whose older resume was renamed by hand (GE Aerospace) is still reported until the file is renamed back or the analysis is re-run. Two companies whose names share the first 20 sanitized characters get the same file names, which only matters within one folder and so does not collide.
 
 ### Implementation Notes (ADR-015)
 
