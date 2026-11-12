@@ -387,12 +387,51 @@ def _bullet(doc, text):
 
 
 # ─────────────────────────────────────────────
+# Document properties (ADR-015 Amendment 6 E1)
+# ─────────────────────────────────────────────
+
+_CLEARED_PROPERTIES = ("comments", "title", "subject", "keywords", "category")
+
+
+def clean_properties(doc, author: str) -> None:
+    """Owner as Author and Last Modified By; no tool comment, title or tags.
+    Nothing in a generated file says a tool wrote it."""
+    cp = doc.core_properties
+    cp.author = author
+    cp.last_modified_by = author
+    for field in _CLEARED_PROPERTIES:
+        setattr(cp, field, "")
+
+
+_TOOL_AUTHORS = {"python-docx"}   # python-docx's own default Author; never the owner
+
+
+def _owner_from(cp) -> str:
+    """The owner's name from a master's properties: Last Modified By, which Word
+    sets on every save, else Author. Blank when neither is set."""
+    for name in (cp.last_modified_by, cp.author):
+        name = (name or "").strip()
+        if name and name not in _TOOL_AUTHORS:
+            return name
+    return ""
+
+
+def document_author(resume_path: str) -> str:
+    """The owner's name for generated files, read from the master resume .docx."""
+    try:
+        return _owner_from(Document(str(_master_docx_path(resume_path))).core_properties)
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────
 # Document generators
 # ─────────────────────────────────────────────
 
-def generate_fit_summary(result: dict, company: str, role: str, folder_path: Path) -> Path:
+def generate_fit_summary(result: dict, company: str, role: str, folder_path: Path,
+                         author: str = "") -> Path:
     doc = Document()
-    doc.core_properties.author = ""
+    clean_properties(doc, author)
     now_str = datetime.now().strftime("%B %d, %Y")
 
     title = doc.add_paragraph()
@@ -458,9 +497,9 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
 
 
 def generate_cover_letter(result: dict, company: str, role: str, folder_path: Path,
-                          file_owner: str = "") -> Path:
+                          file_owner: str = "", author: str = "") -> Path:
     doc = Document()
-    doc.core_properties.author = ""
+    clean_properties(doc, author)
 
     # Tighten margins to maximize content area for one-page fit.
     for section in doc.sections:
@@ -1505,11 +1544,9 @@ def growth_label(it: dict) -> str:
 # Resume tailoring (ADR-015): render, trace, publication
 # render_tailored_resume() edits a copy of the master .docx in place so
 # formatting carries over (§7). write_resume_trace() writes the review trace.
-# publish_resume_pair() and recover_resume_publication() implement the
-# recoverable (not atomic) publication contract of §5.1.
+# publish_resume() puts the resume, then the trace, in place (Amendment 6).
 # ─────────────────────────────────────────────
 
-PUBLISH_JOURNAL = ".resume_publish.json"
 # The trace sits in a subfolder under a name that says what it is, so it is not
 # uploaded to an application by mistake in place of the resume.
 TRACE_DIR = "_review"
@@ -1520,8 +1557,6 @@ TRACE_DIR = "_review"
 # trace and the two names can never be the same file (ADR-015 Amendment 5).
 TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD-"
 LEGACY_TRACE_PREFIX = "TRACE_DO-NOT-UPLOAD_"
-_RUN_ID_RE = re.compile(r"run_id=([0-9TZ]+-[0-9a-f]{8})")
-_TRACE_RUN_ID_RE = re.compile(r"^\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`", re.M)
 
 # Indirection so tests can inject failures between the two replacements.
 _replace = os.replace
@@ -1534,29 +1569,7 @@ def new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
 
 
-def _stamp(doc, run_id: str, state: str, retuned: int) -> None:
-    doc.core_properties.comments = (f"PipelinePilot resume tailoring: run_id={run_id}; "
-                                    f"state={state}; retuned={retuned}")
-
-
-def resume_run_id(path) -> str | None:
-    try:
-        return (_RUN_ID_RE.search(Document(str(path)).core_properties.comments or "") or [None, None])[1]
-    except Exception:
-        return None
-
-
-def trace_run_id(path) -> str | None:
-    try:
-        head = Path(path).read_text(encoding="utf-8")[:2000]
-    except OSError:
-        return None
-    m = _TRACE_RUN_ID_RE.search(head)
-    return m.group(1) if m else None
-
-
-def render_tailored_resume(master_docx, inventory: dict, res: dict, out_path,
-                           run_id: str, state: str) -> Path:
+def render_tailored_resume(master_docx, inventory: dict, res: dict, out_path) -> Path:
     """Write the tailored resume to out_path by editing a copy of the master.
     Only inventoried (single-run) paragraphs change; locked sections are
     never touched. Added bullets clone an existing bullet paragraph."""
@@ -1595,16 +1608,16 @@ def render_tailored_resume(master_docx, inventory: dict, res: dict, out_path,
     for r_master, r in zip(inventory["roles"], res["roles"]):
         set_bullets(r_master["bullets"], r["bullets"])
 
-    _stamp(doc, run_id, state, len(retuned_items(res)))
+    clean_properties(doc, _owner_from(doc.core_properties))
     out = Path(out_path)
     doc.save(str(out))
     return out
 
 
-def master_copy_resume(master_docx, out_path, run_id: str) -> Path:
-    """The master, unchanged except for the run stamp (state master-copy)."""
+def master_copy_resume(master_docx, out_path) -> Path:
+    """The master, unchanged except for clean document properties (state master-copy)."""
     doc = Document(str(master_docx))
-    _stamp(doc, run_id, "master-copy", 0)
+    clean_properties(doc, _owner_from(doc.core_properties))
     out = Path(out_path)
     doc.save(str(out))
     return out
@@ -1680,127 +1693,36 @@ def _safe_unlink(path: Path) -> bool:
         return False
 
 
-def _validate_new_pair(resume_new: Path, trace_new: Path, run_id: str) -> str | None:
-    if resume_run_id(resume_new) != run_id:
-        return "prepared resume does not carry the run_id"
-    if trace_run_id(trace_new) != run_id:
-        return "prepared trace does not carry the run_id"
-    return None
-
-
-def publish_resume_pair(folder, resume_name: str, trace_name: str,
-                        resume_new: Path, trace_new: Path, run_id: str) -> dict:
-    """ADR-015 §5.1 steps 2 to 6, after both .new files are prepared.
+def publish_resume(folder, resume_name: str, trace_name: str,
+                   resume_new: Path, trace_new: Path) -> dict:
+    """ADR-015 Amendment 6 E2: two single-file replacements, resume first.
     Returns {"outcome": "published" | "publication-failed", "detail": str}."""
     folder = Path(folder)
-    finals = [folder / resume_name, folder / trace_name]
-    news = [Path(resume_new), Path(trace_new)]
-    prevs = [p.with_name(p.name + ".prev") for p in finals]
-    journal = folder / PUBLISH_JOURNAL
-
-    def cleanup_new():
-        for n in news:
-            _safe_unlink(n)
-
-    problem = _validate_new_pair(news[0], news[1], run_id)
-    if problem:
-        cleanup_new()
-        return {"outcome": "publication-failed", "detail": problem + "; previous resume kept"}
     try:
-        journal.write_text(json.dumps({
-            "run_id": run_id, "phase": "replacing",
-            "final": [_rel(folder, p) for p in finals], "new": [_rel(folder, p) for p in news],
-        }), encoding="utf-8")
+        _replace(resume_new, folder / resume_name)
     except OSError as e:
-        cleanup_new()
-        return {"outcome": "publication-failed", "detail": f"journal not written ({e}); previous resume kept"}
-
+        _safe_unlink(Path(resume_new))
+        _safe_unlink(Path(trace_new))
+        return {"outcome": "publication-failed",
+                "detail": f"{e}; previous resume kept (is it open in Word?)"}
     try:
-        for f, prev in zip(finals, prevs):
-            if f.exists():
-                _replace(f, prev)
-        for n, f in zip(news, finals):
-            _replace(n, f)
+        _replace(trace_new, folder / trace_name)
     except OSError as e:
-        restored = _roll_back(folder, finals, news, prevs, run_id)
-        if not restored:
-            return {"outcome": "publication-failed",
-                    "detail": (f"manual recovery needed ({e}). Files on disk: "
-                               + ", ".join(p.name for p in prevs + news if p.exists())
-                               + f"; journal {PUBLISH_JOURNAL} kept")}
-        _safe_unlink(journal)
-        return {"outcome": "publication-failed", "detail": f"{e}; previous resume kept"}
-
-    _safe_unlink(journal)
-    for prev in prevs:
-        _safe_unlink(prev)
+        _safe_unlink(Path(trace_new))
+        return {"outcome": "published",
+                "detail": f"trace not updated ({e}); the trace in {TRACE_DIR} is from an earlier run"}
     return {"outcome": "published", "detail": ""}
-
-
-def _rel(folder: Path, p) -> str:
-    """Journal paths are relative to the folder, so a trace in TRACE_DIR is recovered
-    from the right place. Journals that hold bare names still read the same way."""
-    return Path(p).relative_to(folder).as_posix()
-
-
-def _roll_back(folder: Path, finals, news, prevs, run_id: str) -> bool:
-    """Put the previous pair back. True on success."""
-    ok = True
-    for f in finals:
-        carries = (resume_run_id(f) if f.suffix == ".docx" else trace_run_id(f)) == run_id
-        if f.exists() and carries and not _safe_unlink(f):
-            ok = False
-    for f, prev in zip(finals, prevs):
-        if prev.exists():
-            try:
-                _replace(prev, f)
-            except OSError:
-                ok = False
-    for n in news:
-        _safe_unlink(n)
-    return ok
-
-
-def recover_resume_publication(folder) -> str | None:
-    """Resolve an interrupted publication before a new run (ADR-015 §5.1).
-    Returns a message for the progress dialog, or None if nothing was pending."""
-    folder = Path(folder)
-    journal = folder / PUBLISH_JOURNAL
-    if not journal.exists():
-        return None
-    try:
-        data = json.loads(journal.read_text(encoding="utf-8"))
-        run_id = data["run_id"]
-        finals = [folder / n for n in data["final"]]
-        news = [folder / n for n in data["new"]]
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        raise RuntimeError(f"An interrupted resume publication left {PUBLISH_JOURNAL} in {folder.name}, "
-                           f"and it cannot be read ({e}). Check the resume files by hand, then delete it.")
-    prevs = [p.with_name(p.name + ".prev") for p in finals]
-    resume_ok = finals[0].exists() and resume_run_id(finals[0]) == run_id
-    trace_ok = finals[1].exists() and trace_run_id(finals[1]) == run_id
-    if resume_ok and trace_ok:
-        _safe_unlink(journal)
-        for prev in prevs:
-            _safe_unlink(prev)
-        return None
-    if not _roll_back(folder, finals, news, prevs, run_id):
-        raise RuntimeError(f"An interrupted resume publication in {folder.name} could not be rolled back. "
-                           f"Check the .prev and .new files by hand; {PUBLISH_JOURNAL} was kept.")
-    _safe_unlink(journal)
-    return "Previous resume restored after an interrupted publication."
 
 
 def folder_resume_problems(folder) -> list[str]:
     """Every resume/trace problem in one opportunity folder, for the startup
-    check (report only). Pairs are found by file name, so no record lookup:
+    check (report only). Pairs are found by file name only (Amendment 6 E3):
     a trace is named for its resume (TRACE_PREFIX), and a trace from before
-    the short names (LEGACY_TRACE_PREFIX) pairs with Resume_{Company}_{Role}.docx."""
+    the short names (LEGACY_TRACE_PREFIX) pairs with Resume_{Company}_{Role}.docx.
+    The resume itself is never opened, so edits made in Word are never reported."""
     folder = Path(folder)
     if not folder.is_dir():
         return []
-    if (folder / PUBLISH_JOURNAL).exists():
-        return ["interrupted resume publication"]
     problems = []
     for trace in sorted((folder / TRACE_DIR).glob("TRACE_DO-NOT-UPLOAD*.md")):
         if trace.name.startswith(TRACE_PREFIX):
@@ -1816,19 +1738,11 @@ def folder_resume_problems(folder) -> list[str]:
 
 
 def resume_pair_problem(folder, resume_name: str, trace_name: str) -> str | None:
-    """For the startup check (report only): an in-flight journal or a resume
-    and trace whose run_ids do not match. A folder with neither file, or a
-    master copy from before ADR-015 with no trace, is not a problem."""
+    """For the startup check (report only): a trace whose resume is missing.
+    A folder with neither file, or a resume with no trace, is not a problem."""
     folder = Path(folder)
-    if (folder / PUBLISH_JOURNAL).exists():
-        return "interrupted resume publication"
-    resume, trace = folder / resume_name, folder / trace_name
-    if not trace.exists():
-        return None
-    if not resume.exists():
+    if (folder / trace_name).exists() and not (folder / resume_name).exists():
         return "resume trace without its resume"
-    if resume_run_id(resume) != trace_run_id(trace):
-        return "resume and trace from different runs"
     return None
 
 
@@ -1980,10 +1894,6 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
     resume_name = upload_file_name("resume", company, file_owner)
     trace_name = f"{TRACE_DIR}/{TRACE_PREFIX}{resume_name[:-len('.docx')]}.md"
     notes = []
-    recovered = recover_resume_publication(folder_path)
-    if recovered:
-        notes.append(recovered)
-
     run_id = new_run_id()
     (folder_path / TRACE_DIR).mkdir(exist_ok=True)
     resume_new = folder_path / (resume_name + ".new")
@@ -2002,7 +1912,7 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
         check_final_invariants(inv, res, excluded)
         state = tailoring_state(res)
         retuned = len(retuned_items(res))
-        render_tailored_resume(master, inv, res, resume_new, run_id, state)
+        render_tailored_resume(master, inv, res, resume_new)
         write_resume_trace(trace_new, run_id=run_id, state=state, company=company, role=role,
                            model=model, inventory=inv, pool=pool, res=res)
     except Exception as e:
@@ -2016,7 +1926,7 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
         else:
             reason = f"{type(e).__name__}: {e}"
         try:
-            master_copy_resume(master, resume_new, run_id)
+            master_copy_resume(master, resume_new)
             write_resume_trace(trace_new, run_id=run_id, state=state, company=company, role=role,
                                model=model, inventory=None, pool=None, res=None, reason=reason)
         except Exception as e2:
@@ -2026,7 +1936,7 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
             return {"resume": None, "trace": None, "state": state, "retuned": 0,
                     "outcome": "publication-failed", "message": " | ".join(notes + [msg])}
 
-    pub = publish_resume_pair(folder_path, resume_name, trace_name, resume_new, trace_new, run_id)
+    pub = publish_resume(folder_path, resume_name, trace_name, resume_new, trace_new)
     if state == "master-copy":
         msg = f"master-copy ({reason})"
     else:
@@ -2035,15 +1945,17 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
     if pub["detail"]:
         msg += f" ({pub['detail']})"
     published = pub["outcome"] == "published"
+    trace_written = published and not pub["detail"]
     return {"resume": folder_path / resume_name if published else None,
-            "trace": folder_path / trace_name if published else None,
+            "trace": folder_path / trace_name if trace_written else None,
             "state": state, "retuned": retuned, "outcome": pub["outcome"],
             "message": " | ".join(notes + [msg])}
 
 
-def generate_interview_guide(result: dict, company: str, role: str, folder_path: Path) -> Path:
+def generate_interview_guide(result: dict, company: str, role: str, folder_path: Path,
+                             author: str = "") -> Path:
     doc = Document()
-    doc.core_properties.author = ""
+    clean_properties(doc, author)
     now_str = datetime.now().strftime("%B %d, %Y")
 
     title = doc.add_paragraph()
@@ -2364,10 +2276,11 @@ def run_fit_analysis(
             )
 
             _p("Generating fit summary...", stage="fit_summary")
-            fa_path = generate_fit_summary(result, company, role, folder_path)
+            author = document_author(resume_path)
+            fa_path = generate_fit_summary(result, company, role, folder_path, author)
 
             _p("Generating cover letter...", stage="cover_letter")
-            cl_path = generate_cover_letter(result, company, role, folder_path, file_owner)
+            cl_path = generate_cover_letter(result, company, role, folder_path, file_owner, author)
 
             _p("Tailoring resume...", "Second call: select, check and publish", stage="resume")
             tailoring = generate_tailored_resume(
@@ -2379,7 +2292,7 @@ def run_fit_analysis(
             _p("Tailored resume", tailoring["message"], stage="resume")
 
             _p("Generating interview prep guide...", stage="interview_guide")
-            ip_path = generate_interview_guide(result, company, role, folder_path)
+            ip_path = generate_interview_guide(result, company, role, folder_path, author)
 
             # Update SQLite. Status moves to Analyzing only from a pre-analysis
             # status; a JFA re-run never moves Applied/Pursuing/etc. backward.

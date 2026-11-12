@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
+from docx import Document
 
 import fit_analysis_engine as fae
 from test_resume_sources import ROLE_MAP, item, make_master, make_pool
@@ -76,13 +77,14 @@ RES = "resume_Acme.docx"
 TRACE = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}resume_Acme.md"
 
 
-def test_tailored_run_publishes_pair_with_matching_run_id(env):
+def test_tailored_run_publishes_resume_and_trace(env):
     master, folder, pool, inv = env
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "tailored" and out["outcome"] == "published"
     assert files(folder) == [TRACE, RES]
     assert out["trace"] == folder / TRACE
-    assert fae.resume_run_id(out["resume"]) == fae.trace_run_id(out["trace"])
+    assert "**run_id:** `" in out["trace"].read_text(encoding="utf-8")   # the run_id lives in the trace only
+    assert "run_id" not in (Document(str(out["resume"])).core_properties.comments or "")
     assert "0 retuned items need review; published" in out["message"]
 
 
@@ -203,8 +205,8 @@ def test_render_failure_publishes_master_copy(env, monkeypatch):
 
 def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     master, folder, pool, inv = env
-    first = gen(env, Client(echo(inv)))
-    old = fae.resume_run_id(first["resume"])
+    gen(env, Client(echo(inv)))
+    old = (folder / RES).read_bytes(), (folder / TRACE).read_text(encoding="utf-8")
 
     def denied(src, dst):
         raise OSError("access denied")
@@ -213,24 +215,25 @@ def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     out = gen(env, Client(echo(inv)))
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and out["resume"] is None
-    assert files(folder) == [TRACE, RES]
-    assert fae.resume_run_id(folder / RES) == old
+    assert files(folder) == [TRACE, RES]                 # no .new file left behind
+    assert ((folder / RES).read_bytes(), (folder / TRACE).read_text(encoding="utf-8")) == old
 
 
-def test_interrupted_publication_is_recovered_first(env):
+def test_trace_write_failure_publishes_resume_and_reports_no_trace(env, monkeypatch):
     master, folder, pool, inv = env
-    gen(env, Client(echo(inv)))
-    (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(
-        {"run_id": "20261031T000000Z-deadbeef", "phase": "replacing",
-         "final": [RES, TRACE],
-         "new": [RES + ".new", TRACE + ".new"]}), encoding="utf-8")
-    (folder / (RES + ".new")).write_bytes(b"staged resume from the interrupted run")
-    (folder / (TRACE + ".new")).write_text("staged trace from the interrupted run", encoding="utf-8")
+    real = fae._replace
+
+    def trace_fails(src, dst):
+        if str(src).endswith(".md.new"):
+            raise OSError("disk full")
+        real(src, dst)
+
+    monkeypatch.setattr(fae, "_replace", trace_fails)
     out = gen(env, Client(echo(inv)))
-    assert out["outcome"] == "published"
-    assert not (folder / fae.PUBLISH_JOURNAL).exists()
-    assert "Previous resume restored" in out["message"]
-    assert files(folder) == [TRACE, RES]  # staged .new files from the interrupted run are gone
+    monkeypatch.undo()
+    assert out["outcome"] == "published" and out["resume"] == folder / RES and out["trace"] is None
+    assert "trace not updated" in out["message"]
+    assert files(folder) == [RES]
 
 
 # The SDK tests below take the api_error fixture (conftest.py), which skips only them. A
@@ -247,8 +250,8 @@ def test_tailoring_stage_model_not_found_gives_master_copy_with_guidance(env, ap
 
 def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(env, monkeypatch, api_error):
     master, folder, pool, inv = env
-    first = gen(env, Client(echo(inv)))
-    old = fae.resume_run_id(first["resume"])
+    gen(env, Client(echo(inv)))
+    old = (folder / RES).read_bytes()
     e = api_error("NotFoundError", 404, "gone")
 
     def denied(src, dst):
@@ -258,7 +261,7 @@ def test_tailoring_stage_not_found_with_failed_publication_keeps_previous_pair(e
     out = gen(env, Client(exc=e), model="claude-gone-1")
     monkeypatch.undo()
     assert out["outcome"] == "publication-failed" and "JFA Model" in out["message"]
-    assert fae.resume_run_id(folder / RES) == old
+    assert (folder / RES).read_bytes() == old
 
 
 # ── Amendment 2 F10: the round-2 regressions end to end ──

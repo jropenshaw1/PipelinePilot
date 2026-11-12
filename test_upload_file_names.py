@@ -7,7 +7,7 @@ import fit_analysis_engine as fae
 from models import FILE_OWNER_KEY
 from test_resume_sources import make_master
 
-A, B = "20261030T000000Z-0000000a", "20261031T000000Z-0000000b"
+A, B = "20261030T000000Z-0000000a", "20261031T000000Z-0000000b"  # trace run_ids only
 
 
 def test_names_with_and_without_owner():
@@ -65,23 +65,21 @@ def test_short_name_pair_is_checked(folder_and_master):
     folder, master = folder_and_master
     _trace(folder, fae.TRACE_PREFIX, "openshaw_resume_Acme", A)
     assert fae.folder_resume_problems(folder) == ["resume trace without its resume"]
-    fae.master_copy_resume(master, folder / "openshaw_resume_Acme.docx", B)
-    assert fae.folder_resume_problems(folder) == ["resume and trace from different runs"]
-    fae.master_copy_resume(master, folder / "openshaw_resume_Acme.docx", A)
+    fae.master_copy_resume(master, folder / "openshaw_resume_Acme.docx")
     assert fae.folder_resume_problems(folder) == []
 
 
 def test_blank_owner_short_name_pair_is_checked(folder_and_master):
     folder, master = folder_and_master
     _trace(folder, fae.TRACE_PREFIX, "resume_Acme", A)
-    fae.master_copy_resume(master, folder / "resume_Acme.docx", A)
+    fae.master_copy_resume(master, folder / "resume_Acme.docx")
     assert fae.folder_resume_problems(folder) == []
 
 
 def test_older_trace_still_pairs_with_older_resume_name(folder_and_master):
     folder, master = folder_and_master
     _trace(folder, fae.LEGACY_TRACE_PREFIX, "Acme_Director", A)
-    fae.master_copy_resume(master, folder / "Resume_Acme_Director.docx", A)
+    fae.master_copy_resume(master, folder / "Resume_Acme_Director.docx")
     assert fae.folder_resume_problems(folder) == []
     # An older resume renamed by hand at upload time is still reported until renamed back.
     (folder / "Resume_Acme_Director.docx").rename(folder / "Resume_Acme_Dir.docx")
@@ -92,7 +90,7 @@ def test_older_pair_for_a_company_named_resume_is_not_misread(folder_and_master)
     """Review finding F1 (Gee, Grok): the earlier name-shape test read this as a short name."""
     folder, master = folder_and_master
     _trace(folder, fae.LEGACY_TRACE_PREFIX, "Resume_DirectorIT", A)
-    fae.master_copy_resume(master, folder / "Resume_Resume_DirectorIT.docx", A)
+    fae.master_copy_resume(master, folder / "Resume_Resume_DirectorIT.docx")
     assert fae.folder_resume_problems(folder) == []
 
 
@@ -105,7 +103,7 @@ def test_short_and_older_pairs_coexist_in_one_folder(folder_and_master):
     old = fae.LEGACY_TRACE_PREFIX + "Resume_Resume.md"
     assert new.lower() != old.lower()
     _trace(folder, fae.LEGACY_TRACE_PREFIX, "Resume_Resume", A)
-    fae.master_copy_resume(master, folder / "Resume_Resume_Resume.docx", A)
+    fae.master_copy_resume(master, folder / "Resume_Resume_Resume.docx")
     _trace(folder, fae.TRACE_PREFIX, "resume_Resume", B)
-    fae.master_copy_resume(master, folder / "resume_Resume.docx", B)
+    fae.master_copy_resume(master, folder / "resume_Resume.docx")
     assert fae.folder_resume_problems(folder) == []

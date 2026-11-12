@@ -1,5 +1,7 @@
-"""ADR-015 §5.1 and §7: render, trace, recoverable publication (synthetic fixtures only)."""
-import json
+"""ADR-015 §7 render and trace; Amendment 6 clean document properties and simple
+publication (synthetic fixtures only)."""
+import re
+import zipfile
 
 import pytest
 from docx import Document
@@ -8,6 +10,7 @@ import fit_analysis_engine as fae
 from test_resume_sources import make_master
 
 RES, TR = "Resume_Acme_Director.docx", "ResumeTrace_Acme_Director.md"
+RUN_ID_RE = re.compile(r"\*\*run_id:\*\* `([0-9TZ]+-[0-9a-f]{8})`")
 
 
 def tailored_res(inv):
@@ -36,18 +39,41 @@ def texts(path):
 
 # ── §7 render ──
 
-def test_render_changes_only_editable_text_and_stamps_run_id(tmp_path):
+def owned_master(path):
+    """A master as Word leaves it: the owner in Last Modified By, a placeholder Author."""
+    master = make_master(path)
+    doc = Document(str(master))
+    doc.core_properties.author = "Un-named"
+    doc.core_properties.last_modified_by = "Pat Example"
+    doc.core_properties.comments = "a note in the master"
+    doc.save(str(master))
+    return master
+
+
+def core_xml(path):
+    with zipfile.ZipFile(path) as z:
+        return z.read("docProps/core.xml").decode("utf-8")
+
+
+def assert_clean(path, owner):
+    cp = Document(str(path)).core_properties
+    assert cp.author == owner and cp.last_modified_by == owner
+    assert (cp.comments, cp.title, cp.subject, cp.keywords, cp.category) == ("", "", "", "", "")
+    xml = core_xml(path)
+    assert "run_id" not in xml and "python-docx" not in xml and "PipelinePilot" not in xml
+
+
+def test_render_changes_only_editable_text(tmp_path):
     master = make_master(tmp_path / "m.docx")
     inv = fae.parse_master_resume(master)
     _, res = tailored_res(inv)
-    out = fae.render_tailored_resume(master, inv, res, tmp_path / "out.docx", "20261031T000000Z-0123abcd", "tailored")
+    out = fae.render_tailored_resume(master, inv, res, tmp_path / "out.docx")
     before, after = texts(master), texts(out)
     assert after[2] == "Technology Leader | Cloud"
     assert after[0:2] == before[0:2]                      # name and contact untouched
     assert "Owned a $5M budget." not in after             # summary trimmed to one bullet
     assert after.index("Cut cloud spend 20% in one year.") < after.index("Built a platform team from zero.")
     assert after[-4:] == before[-4:]                      # portfolio, education untouched
-    assert fae.resume_run_id(out) == "20261031T000000Z-0123abcd"
 
 
 def test_render_keeps_bullet_formatting_and_can_add_bullets(tmp_path):
@@ -56,7 +82,7 @@ def test_render_keeps_bullet_formatting_and_can_add_bullets(tmp_path):
     _, res = tailored_res(inv)
     res["summary_bullets"].append({"text": "A third summary point.", "source_ids": ["M:S:0"], "status": "retuned"})
     res["summary_bullets"].append({"text": "A fourth summary point.", "source_ids": ["M:S:1"], "status": "retuned"})
-    out = fae.render_tailored_resume(master, inv, res, tmp_path / "o.docx", "20261031T000000Z-0123abcd", "partial")
+    out = fae.render_tailored_resume(master, inv, res, tmp_path / "o.docx")
     doc = Document(str(out))
     added = [p for p in doc.paragraphs if p.text in ("A third summary point.", "A fourth summary point.")]
     assert [p.text for p in added] == ["A third summary point.", "A fourth summary point."]
@@ -65,11 +91,57 @@ def test_render_keeps_bullet_formatting_and_can_add_bullets(tmp_path):
     assert len(reparsed["summary_bullets"]) == 3
 
 
-def test_master_copy_is_unchanged_but_stamped(tmp_path):
+def test_master_copy_is_unchanged(tmp_path):
     master = make_master(tmp_path / "m.docx")
-    out = fae.master_copy_resume(master, tmp_path / "c.docx", "20261031T000000Z-0123abcd")
+    out = fae.master_copy_resume(master, tmp_path / "c.docx")
     assert texts(out) == texts(master)
-    assert fae.resume_run_id(out) == "20261031T000000Z-0123abcd"
+
+
+# ── Amendment 6 E1: clean document properties ──
+
+def test_tailored_resume_carries_owner_and_no_tool_trace(tmp_path):
+    master = owned_master(tmp_path / "m.docx")
+    inv = fae.parse_master_resume(master)
+    _, res = tailored_res(inv)
+    assert_clean(fae.render_tailored_resume(master, inv, res, tmp_path / "out.docx"), "Pat Example")
+
+
+def test_master_copy_carries_owner_and_no_tool_trace(tmp_path):
+    master = owned_master(tmp_path / "m.docx")
+    assert_clean(fae.master_copy_resume(master, tmp_path / "c.docx"), "Pat Example")
+
+
+def test_cover_letter_carries_owner_and_no_tool_trace(tmp_path):
+    out = fae.generate_cover_letter({"cover_letter": "Dear team,\nBody.\nSincerely,"}, "Acme",
+                                    "Director", tmp_path, "pat", author="Pat Example")
+    assert_clean(out, "Pat Example")
+
+
+def test_fit_summary_and_interview_guide_carry_owner(tmp_path):
+    result = {"fit_score": 0.7, "advocate_case": "a", "auditor_case": "b", "gaps": [], "alignment": [],
+              "next_steps": [], "role_summary": "", "score_justification": "", "interview_guide": []}
+    for gen in (fae.generate_fit_summary, fae.generate_interview_guide):
+        assert_clean(gen(result, "Acme", "Director", tmp_path, author="Pat Example"), "Pat Example")
+
+
+def test_owner_comes_from_last_modified_by_then_author(tmp_path):
+    master = owned_master(tmp_path / "m.docx")
+    assert fae.document_author(str(master)) == "Pat Example"
+    doc = Document(str(master))
+    doc.core_properties.last_modified_by = ""
+    doc.core_properties.author = "Pat Author"
+    doc.save(str(master))
+    assert fae.document_author(str(master)) == "Pat Author"
+
+
+def test_python_docx_default_author_is_never_the_owner(tmp_path):
+    master = make_master(tmp_path / "m.docx")            # python-docx defaults: Author "python-docx"
+    assert fae.document_author(str(master)) == ""
+    assert_clean(fae.master_copy_resume(master, tmp_path / "c.docx"), "")
+
+
+def test_document_author_is_blank_when_the_master_cannot_be_read(tmp_path):
+    assert fae.document_author(str(tmp_path / "missing.docx")) == ""
 
 
 # ── trace ──
@@ -81,7 +153,7 @@ def test_trace_lists_retuned_items_first_with_sources(tmp_path):
     tr = fae.write_resume_trace(tmp_path / TR, run_id="20261031T000000Z-0123abcd", state="tailored",
                                 company="Acme", role="Director", model="claude-test-1",
                                 inventory=inv, pool=pool, res=res).read_text(encoding="utf-8")
-    assert fae.trace_run_id(tmp_path / TR) == "20261031T000000Z-0123abcd"
+    assert RUN_ID_RE.search(tr).group(1) == "20261031T000000Z-0123abcd"
     assert tr.index("## Retuned items") < tr.index("## Changes the checks made") < tr.index("## Published resume")
     assert "### headline" in tr and "- master: Technology Leader | Platforms" in tr
     assert "**retuned items:** 1" in tr
@@ -114,238 +186,121 @@ def test_master_copy_trace_names_the_reason(tmp_path):
 
 def test_new_run_id_format():
     rid = fae.new_run_id()
-    assert fae._RUN_ID_RE.search("run_id=" + rid).group(1) == rid
+    assert re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", rid)
 
 
-# ── §5.1 publication ──
-
-def make_pair(folder, run_id, master, label):
-    """A prepared .new pair; label distinguishes old from new content."""
-    folder.mkdir(exist_ok=True)
-    r = fae.master_copy_resume(master, folder / (RES + ".new"), run_id)
-    t = folder / (TR + ".new")
-    t.write_text(f"# trace\n\n**run_id:** `{run_id}`\n\n{label}\n", encoding="utf-8")
-    return r, t
-
-
-def publish(folder, run_id, master, label):
-    r, t = make_pair(folder, run_id, master, label)
-    return fae.publish_resume_pair(folder, RES, TR, r, t, run_id)
-
-
-OLD, NEW = "20261030T000000Z-00000001", "20261031T000000Z-00000002"
-
+# ── Amendment 6 E2: publication, resume first ──
 
 @pytest.fixture
 def setup(tmp_path):
     master = make_master(tmp_path / "m.docx")
     folder = tmp_path / "Acme_Director"
+    folder.mkdir()
     return master, folder
 
 
-def state(folder):
-    return {p.name for p in folder.iterdir()}, fae.resume_run_id(folder / RES), fae.trace_run_id(folder / TR)
+def stage(folder, master, label):
+    """A prepared .new pair; label distinguishes runs."""
+    r = fae.master_copy_resume(master, folder / (RES + ".new"))
+    doc = Document(str(r))
+    doc.add_paragraph(label)
+    doc.save(str(r))
+    t = folder / (TR + ".new")
+    t.write_text(f"# trace\n\n{label}\n", encoding="utf-8")
+    return r, t
+
+
+def publish(folder, master, label):
+    r, t = stage(folder, master, label)
+    return fae.publish_resume(folder, RES, TR, r, t)
+
+
+def labels(folder):
+    """Which run's resume and trace are on disk, and every file name."""
+    resume = texts(folder / RES)[-1] if (folder / RES).exists() else None
+    trace = (folder / TR).read_text(encoding="utf-8").strip().splitlines()[-1] if (folder / TR).exists() else None
+    return {p.name for p in folder.iterdir()}, resume, trace
 
 
 def test_first_run_publishes_cleanly(setup):
     master, folder = setup
-    assert publish(folder, NEW, master, "new")["outcome"] == "published"
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == NEW
+    assert publish(folder, master, "new") == {"outcome": "published", "detail": ""}
+    assert labels(folder) == ({RES, TR}, "new", "new")
 
 
-def test_rerun_replaces_pair_and_cleans_up(setup):
+def test_rerun_replaces_both_files(setup):
     master, folder = setup
-    publish(folder, OLD, master, "old")
-    assert publish(folder, NEW, master, "new")["outcome"] == "published"
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == NEW
+    publish(folder, master, "old")
+    assert publish(folder, master, "new")["outcome"] == "published"
+    assert labels(folder) == ({RES, TR}, "new", "new")
 
 
-def test_failure_after_first_replacement_restores_previous_pair(setup, monkeypatch):
+def test_resume_replace_failure_changes_nothing_and_cleans_up(setup, monkeypatch):
+    """The resume is open in Word: nothing is replaced and no .new file is left."""
     master, folder = setup
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-    real, calls = fae._replace, []
+    publish(folder, master, "old")
+    r, t = stage(folder, master, "new")
 
-    def flaky(src, dst):
-        calls.append((src, dst))
+    def locked(src, dst):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(fae, "_replace", locked)
+    out = fae.publish_resume(folder, RES, TR, r, t)
+    monkeypatch.undo()
+    assert out["outcome"] == "publication-failed"
+    assert "previous resume kept" in out["detail"] and "open in Word" in out["detail"]
+    assert labels(folder) == ({RES, TR}, "old", "old")
+
+
+def test_trace_replace_failure_publishes_resume_and_says_so(setup, monkeypatch):
+    master, folder = setup
+    publish(folder, master, "old")
+    r, t = stage(folder, master, "new")
+    real = fae._replace
+
+    def trace_fails(src, dst):
         if str(src).endswith(TR + ".new"):
             raise OSError("disk full")
         real(src, dst)
 
-    monkeypatch.setattr(fae, "_replace", flaky)
-    out = fae.publish_resume_pair(folder, RES, TR, r, t, NEW)
-    monkeypatch.setattr(fae, "_replace", real)
-    assert out["outcome"] == "publication-failed" and "previous resume kept" in out["detail"]
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == OLD
-
-
-def test_unwritable_destination_changes_nothing(setup, monkeypatch):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-
-    def always_fail(src, dst):
-        raise OSError("access denied")
-
-    monkeypatch.setattr(fae, "_replace", always_fail)
-    out = fae.publish_resume_pair(folder, RES, TR, r, t, NEW)
-    assert out["outcome"] == "publication-failed"
-    assert "published" not in out["detail"]
+    monkeypatch.setattr(fae, "_replace", trace_fails)
+    out = fae.publish_resume(folder, RES, TR, r, t)
     monkeypatch.undo()
-    _, rr, tr = state(folder)
-    assert rr == tr == OLD
+    assert out["outcome"] == "published"
+    assert "trace not updated" in out["detail"] and "earlier run" in out["detail"]
+    assert labels(folder) == ({RES, TR}, "new", "old")
 
 
-def test_journal_write_failure_replaces_nothing(setup, monkeypatch):
+# ── Amendment 6 E3: startup check pairs by name only ──
+
+def test_pair_problem_is_only_a_trace_without_its_resume(setup):
     master, folder = setup
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-    real_write = type(folder).write_text
-
-    def deny(self, *a, **k):
-        if self.name == fae.PUBLISH_JOURNAL:
-            raise OSError("read-only")
-        return real_write(self, *a, **k)
-
-    monkeypatch.setattr(type(folder), "write_text", deny)
-    out = fae.publish_resume_pair(folder, RES, TR, r, t, NEW)
-    monkeypatch.undo()
-    assert out["outcome"] == "publication-failed" and "journal not written" in out["detail"]
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == OLD
+    assert fae.resume_pair_problem(folder, RES, TR) is None                    # neither file
+    fae.master_copy_resume(master, folder / RES)
+    assert fae.resume_pair_problem(folder, RES, TR) is None                    # resume, no trace
+    (folder / TR).write_text("**run_id:** `20261031T000000Z-00000002`\n", encoding="utf-8")
+    assert fae.resume_pair_problem(folder, RES, TR) is None                    # both
+    (folder / RES).unlink()
+    assert fae.resume_pair_problem(folder, RES, TR) == "resume trace without its resume"
 
 
-def test_restore_failure_reports_manual_recovery_and_keeps_journal(setup, monkeypatch):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-    real = fae._replace
-
-    def broken(src, dst):
-        if str(src).endswith(".prev") or str(src).endswith(TR + ".new"):
-            raise OSError("locked")
-        real(src, dst)
-
-    monkeypatch.setattr(fae, "_replace", broken)
-    out = fae.publish_resume_pair(folder, RES, TR, r, t, NEW)
-    assert out["outcome"] == "publication-failed" and "manual recovery needed" in out["detail"]
-    assert (folder / fae.PUBLISH_JOURNAL).exists()
-
-
-def test_invalid_prepared_pair_is_not_published(setup):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-    t.write_text("# trace without a run id\n", encoding="utf-8")
-    out = fae.publish_resume_pair(folder, RES, TR, r, t, NEW)
-    assert out["outcome"] == "publication-failed"
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == OLD
-
-
-def interrupt_between(folder, master):
-    """Disk state of a crash after the resume was replaced but before the trace."""
-    publish(folder, OLD, master, "old")
-    r, t = make_pair(folder, NEW, master, "new")
-    (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(
-        {"run_id": NEW, "phase": "replacing", "final": [RES, TR], "new": [r.name, t.name]}), encoding="utf-8")
-    fae.os.replace(folder / RES, folder / (RES + ".prev"))
-    fae.os.replace(folder / TR, folder / (TR + ".prev"))
-    fae.os.replace(r, folder / RES)
-
-
-def test_interruption_between_replacements_rolls_back(setup):
-    master, folder = setup
-    interrupt_between(folder, master)
-    assert fae.resume_pair_problem(folder, RES, TR) == "interrupted resume publication"
-    assert fae.recover_resume_publication(folder) == "Previous resume restored after an interrupted publication."
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == OLD
-
-
-def test_interruption_after_both_replacements_rolls_forward(setup):
-    master, folder = setup
-    interrupt_between(folder, master)
-    fae.os.replace(folder / (TR + ".new"), folder / TR)
-    assert fae.recover_resume_publication(folder) is None
-    names, rr, tr = state(folder)
-    assert names == {RES, TR} and rr == tr == NEW
-
-
-def test_no_journal_means_nothing_to_recover(setup):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    assert fae.recover_resume_publication(folder) is None
-
-
-def test_unreadable_journal_stops_with_instructions(setup):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    (folder / fae.PUBLISH_JOURNAL).write_text("{not json", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="cannot be read"):
-        fae.recover_resume_publication(folder)
-
-
-# ── startup check helper ──
-
-def test_pair_problem_detects_mismatched_run_ids(setup):
-    master, folder = setup
-    publish(folder, OLD, master, "old")
-    (folder / TR).write_text(f"**run_id:** `{NEW}`\n", encoding="utf-8")
-    assert fae.resume_pair_problem(folder, RES, TR) == "resume and trace from different runs"
-
-
-def test_pair_problem_ignores_pre_adr015_folders(setup):
-    master, folder = setup
-    folder.mkdir()
-    fae.master_copy_resume(master, folder / RES, OLD)  # resume without a trace: an old master copy
-    assert fae.resume_pair_problem(folder, RES, TR) is None
-
-
-def test_pair_problem_ok_for_matching_pair(setup):
-    master, folder = setup
-    publish(folder, NEW, master, "new")
-    assert fae.resume_pair_problem(folder, RES, TR) is None
-
-
-def test_trace_in_subfolder_publishes_and_recovers(setup):
-    """The journal records paths relative to the folder, so an interrupted
-    publication of a trace under TRACE_DIR is rolled back in the right place."""
+def test_resume_edited_in_word_is_not_reported(setup):
+    """The owner sets Author, clears Comments and edits text in Word before submitting."""
     master, folder = setup
     tr = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
-    (folder / fae.TRACE_DIR).mkdir(parents=True)
-    def pub(run_id, label):
-        r = fae.master_copy_resume(master, folder / (RES + ".new"), run_id)
-        t = folder / (tr + ".new")
-        t.write_text(f"**run_id:** `{run_id}`\n\n{label}\n", encoding="utf-8")
-        return r, t
-    r, t = pub(OLD, "old")
-    assert fae.publish_resume_pair(folder, RES, tr, r, t, OLD)["outcome"] == "published"
-    r, t = pub(NEW, "new")
-    journal = {"run_id": NEW, "phase": "replacing", "final": [RES, tr], "new": [r.name, tr + ".new"]}
-    (folder / fae.PUBLISH_JOURNAL).write_text(json.dumps(journal), encoding="utf-8")
-    fae.os.replace(folder / RES, folder / (RES + ".prev"))
-    fae.os.replace(folder / tr, folder / (tr + ".prev"))
-    assert fae.recover_resume_publication(folder) == "Previous resume restored after an interrupted publication."
-    assert fae.trace_run_id(folder / tr) == OLD and fae.resume_run_id(folder / RES) == OLD
-    assert sorted(p.name for p in (folder / fae.TRACE_DIR).iterdir()) == [fae.TRACE_PREFIX + "Acme_Director.md"]
+    (folder / fae.TRACE_DIR).mkdir()
+    (folder / tr).write_text("**run_id:** `20261031T000000Z-00000002`\n", encoding="utf-8")
+    resume = fae.master_copy_resume(master, folder / "Acme_Director.docx")
+    doc = Document(str(resume))
+    doc.core_properties.author = "Pat Example"
+    doc.core_properties.comments = "my own note"
+    doc.add_paragraph("A line added by hand.")
+    doc.save(str(resume))
+    assert fae.folder_resume_problems(folder) == []
 
 
-def test_journal_records_paths_relative_to_folder(setup, monkeypatch):
+def test_old_publication_journal_is_ignored(setup):
+    """Amendment 6 E4: a journal file left by the removed protocol is not a report."""
     master, folder = setup
-    tr = f"{fae.TRACE_DIR}/{fae.TRACE_PREFIX}Acme_Director.md"
-    (folder / fae.TRACE_DIR).mkdir(parents=True)
-    r = fae.master_copy_resume(master, folder / (RES + ".new"), NEW)
-    t = folder / (tr + ".new")
-    t.write_text(f"**run_id:** `{NEW}`\n", encoding="utf-8")
-    seen = {}
-    real = fae._replace
-    def spy(src, dst):
-        seen.setdefault("journal", json.loads((folder / fae.PUBLISH_JOURNAL).read_text(encoding="utf-8")))
-        return real(src, dst)
-    monkeypatch.setattr(fae, "_replace", spy)
-    assert fae.publish_resume_pair(folder, RES, tr, r, t, NEW)["outcome"] == "published"
-    assert seen["journal"]["final"] == [RES, tr] and seen["journal"]["new"] == [RES + ".new", tr + ".new"]
+    (folder / ".resume_publish.json").write_text("{}", encoding="utf-8")
+    assert fae.folder_resume_problems(folder) == []

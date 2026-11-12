@@ -166,7 +166,7 @@ def test_run_passes_file_owner_to_cover_letter_and_resume(tmp_path, monkeypatch)
     resume.write_text("r" * 300, encoding="utf-8")
     seen = {}
 
-    def cover_letter(result, company, role, folder_path, file_owner=""):
+    def cover_letter(result, company, role, folder_path, file_owner="", author=""):
         seen["cover_letter"] = file_owner
 
     def tailored(*a, file_owner="", **k):
