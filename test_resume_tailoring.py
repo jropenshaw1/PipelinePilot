@@ -82,7 +82,7 @@ def test_tailored_run_publishes_resume_and_trace(env):
     out = gen(env, Client(echo(inv)))
     assert out["state"] == "tailored" and out["outcome"] == "published"
     assert files(folder) == [TRACE, RES]
-    assert out["trace"] == folder / TRACE
+    assert out["trace"] == folder / TRACE and out["warning"] is False
     assert "**run_id:** `" in out["trace"].read_text(encoding="utf-8")   # the run_id lives in the trace only
     assert "run_id" not in (Document(str(out["resume"])).core_properties.comments or "")
     assert "0 retuned items need review; published" in out["message"]
@@ -214,7 +214,7 @@ def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     monkeypatch.setattr(fae, "_replace", denied)
     out = gen(env, Client(echo(inv)))
     monkeypatch.undo()
-    assert out["outcome"] == "publication-failed" and out["resume"] is None
+    assert out["outcome"] == "publication-failed" and out["resume"] is None and out["warning"] is True
     assert files(folder) == [TRACE, RES]                 # no .new file left behind
     assert ((folder / RES).read_bytes(), (folder / TRACE).read_text(encoding="utf-8")) == old
 
@@ -232,7 +232,7 @@ def test_trace_write_failure_publishes_resume_and_reports_no_trace(env, monkeypa
     out = gen(env, Client(echo(inv)))
     monkeypatch.undo()
     assert out["outcome"] == "published" and out["resume"] == folder / RES and out["trace"] is None
-    assert "trace not updated" in out["message"]
+    assert out["warning"] is True and "trace not written" in out["message"]
     assert files(folder) == [RES]
 
 

@@ -27,7 +27,7 @@ import re
 import shutil
 import threading
 import yaml
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import database
@@ -390,28 +390,36 @@ def _bullet(doc, text):
 # Document properties (ADR-015 Amendment 6 E1)
 # ─────────────────────────────────────────────
 
-_CLEARED_PROPERTIES = ("comments", "title", "subject", "keywords", "category")
+_CLEARED_PROPERTIES = ("comments", "title", "subject", "keywords", "category",
+                       "content_status", "identifier", "version")
 
 
 def clean_properties(doc, author: str) -> None:
-    """Owner as Author and Last Modified By; no tool comment, title or tags.
-    Nothing in a generated file says a tool wrote it."""
+    """Document (core) properties of a generated file: the owner as Author and
+    Last Modified By, created and modified now, revision 1, and no comment,
+    title, tags or status. No tool name or run_id is left in them."""
     cp = doc.core_properties
     cp.author = author
     cp.last_modified_by = author
     for field in _CLEARED_PROPERTIES:
         setattr(cp, field, "")
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    cp.created = now          # python-docx's template says 2013-12-23
+    cp.modified = now
+    cp.revision = 1
 
 
-_TOOL_AUTHORS = {"python-docx"}   # python-docx's own default Author; never the owner
+# Never the owner: python-docx's default Author and Word's placeholders.
+_PLACEHOLDER_AUTHORS = {"python-docx", "un-named", "unnamed", "unknown", "user", "author"}
 
 
 def _owner_from(cp) -> str:
-    """The owner's name from a master's properties: Last Modified By, which Word
-    sets on every save, else Author. Blank when neither is set."""
-    for name in (cp.last_modified_by, cp.author):
+    """The owner's name from a master's properties: Author, which the owner sets,
+    else Last Modified By, which is whoever saved last. Placeholders are skipped;
+    blank when neither field holds a name."""
+    for name in (cp.author, cp.last_modified_by):
         name = (name or "").strip()
-        if name and name not in _TOOL_AUTHORS:
+        if name and name.lower() not in _PLACEHOLDER_AUTHORS:
             return name
     return ""
 
@@ -1698,19 +1706,32 @@ def publish_resume(folder, resume_name: str, trace_name: str,
     """ADR-015 Amendment 6 E2: two single-file replacements, resume first.
     Returns {"outcome": "published" | "publication-failed", "detail": str}."""
     folder = Path(folder)
+    resume_final, trace_final = folder / resume_name, folder / trace_name
+
+    def left_behind(*paths) -> str:
+        names = [Path(p).name for p in paths if not _safe_unlink(Path(p))]
+        return f"; staging file left: {', '.join(names)}" if names else ""
+
     try:
-        _replace(resume_new, folder / resume_name)
+        _replace(resume_new, resume_final)
     except OSError as e:
-        _safe_unlink(Path(resume_new))
-        _safe_unlink(Path(trace_new))
+        kept = ("previous resume kept (is it open in Word?)" if resume_final.exists()
+                else "no resume written")
         return {"outcome": "publication-failed",
-                "detail": f"{e}; previous resume kept (is it open in Word?)"}
+                "detail": f"{e}; {kept}" + left_behind(resume_new, trace_new)}
     try:
-        _replace(trace_new, folder / trace_name)
+        _replace(trace_new, trace_final)
     except OSError as e:
-        _safe_unlink(Path(trace_new))
+        # Never leave an earlier run's trace beside the new resume: its review
+        # list would describe a different resume.
+        if not trace_final.exists():
+            on_disk = "no trace for this run"
+        elif _safe_unlink(trace_final):
+            on_disk = "no trace for this run; the earlier trace was removed"
+        else:
+            on_disk = f"the trace in {TRACE_DIR} is from an earlier run and could not be removed"
         return {"outcome": "published",
-                "detail": f"trace not updated ({e}); the trace in {TRACE_DIR} is from an earlier run"}
+                "detail": f"trace not written ({e}); {on_disk}" + left_behind(trace_new)}
     return {"outcome": "published", "detail": ""}
 
 
@@ -1949,6 +1970,7 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
     return {"resume": folder_path / resume_name if published else None,
             "trace": folder_path / trace_name if trace_written else None,
             "state": state, "retuned": retuned, "outcome": pub["outcome"],
+            "warning": not trace_written,
             "message": " | ".join(notes + [msg])}
 
 
@@ -2311,6 +2333,8 @@ def run_fit_analysis(
             output_files = [p for p in (md_path, fa_path, cl_path, tailoring["resume"],
                                         tailoring["trace"], ip_path) if p]
             result["resume_tailoring"] = tailoring["message"]
+            if tailoring.get("warning"):
+                result["resume_warning"] = tailoring["message"]
             done = f"{result['fit_score']:.0%} — {recommendation} | Resume: {tailoring['message']}"
             _p("Complete.", done, stage="complete")
             on_success(result, output_files)

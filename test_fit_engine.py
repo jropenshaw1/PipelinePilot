@@ -191,3 +191,38 @@ def test_run_passes_file_owner_to_cover_letter_and_resume(tmp_path, monkeypatch)
     t.join(10)
     assert errors == [] and len(done) == 1
     assert seen == {"cover_letter": "openshaw", "resume": "openshaw"}
+
+
+@pytest.mark.parametrize("warning", [True, False])
+def test_resume_warning_reaches_the_finish_dialog(tmp_path, monkeypatch, warning):
+    """ADR-015 Amendment 6 review round 1 (Gee F1): a resume or trace problem is passed
+    to on_success as result["resume_warning"], so the dialog is not shown all green."""
+    pytest.importorskip("anthropic")
+    folder = tmp_path / "Acme_Director"
+    folder.mkdir()
+    (folder / "JD_Acme_Director.txt").write_text("We want platforms. " * 20, encoding="utf-8")
+    resume = tmp_path / "resume.md"
+    resume.write_text("r" * 300, encoding="utf-8")
+    msg = "tailored: 0 retuned items need review; publication-failed (locked; previous resume kept)"
+
+    def tailored(*a, **k):
+        return {"resume": None, "trace": None, "state": "tailored", "retuned": 0,
+                "outcome": "publication-failed" if warning else "published",
+                "warning": warning, "message": msg}
+
+    monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: "key")
+    monkeypatch.setattr(fae.database, "get_opportunity",
+                        lambda db, name: {"company_name": "Acme", "role_title": "Director",
+                                          "job_url": None, "status": "New"})
+    monkeypatch.setattr(fae.database, "update_opportunity", lambda *a, **k: None)
+    monkeypatch.setattr(fae, "_call_api", lambda *a, **k: _result("Led the datacenter exit across many teams."))
+    monkeypatch.setattr(fae, "generate_tailored_resume", tailored)
+    for name in ("generate_fit_summary", "generate_cover_letter", "generate_interview_guide"):
+        monkeypatch.setattr(fae, name, lambda *a, **k: None)
+    errors, results = [], []
+    t = fae.run_fit_analysis(tmp_path / "x.db", str(tmp_path), "Acme_Director", str(resume), 0.65,
+                             on_success=lambda r, f: results.append(r), on_error=errors.append,
+                             model="claude-test-1")
+    t.join(10)
+    assert errors == [] and len(results) == 1
+    assert results[0].get("resume_warning") == (msg if warning else None)

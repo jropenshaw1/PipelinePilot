@@ -2,8 +2,11 @@
 publication (synthetic fixtures only)."""
 import re
 import zipfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from pathlib import Path
+
 from docx import Document
 
 import fit_analysis_engine as fae
@@ -39,13 +42,16 @@ def texts(path):
 
 # ── §7 render ──
 
-def owned_master(path):
-    """A master as Word leaves it: the owner in Last Modified By, a placeholder Author."""
+def owned_master(path, author="Un-named", last_modified_by="Pat Example"):
+    """A master as Word leaves it: by default a placeholder Author and the owner in
+    Last Modified By, plus fields that must not reach an upload file."""
     master = make_master(path)
     doc = Document(str(master))
-    doc.core_properties.author = "Un-named"
-    doc.core_properties.last_modified_by = "Pat Example"
-    doc.core_properties.comments = "a note in the master"
+    cp = doc.core_properties
+    cp.author, cp.last_modified_by = author, last_modified_by
+    cp.comments, cp.content_status, cp.identifier, cp.version = "a note", "Draft", "id-7", "v3"
+    cp.created = cp.modified = datetime(2020, 1, 2, 3, 4, 5)
+    cp.revision = 9
     doc.save(str(master))
     return master
 
@@ -58,9 +64,15 @@ def core_xml(path):
 def assert_clean(path, owner):
     cp = Document(str(path)).core_properties
     assert cp.author == owner and cp.last_modified_by == owner
-    assert (cp.comments, cp.title, cp.subject, cp.keywords, cp.category) == ("", "", "", "", "")
+    assert (cp.comments, cp.title, cp.subject, cp.keywords, cp.category,
+            cp.content_status, cp.identifier, cp.version) == ("",) * 8
+    now = datetime.now(timezone.utc)
+    for stamp in (cp.created, cp.modified):                 # not python-docx's 2013 or the master's date
+        assert now - timedelta(minutes=5) <= stamp <= now + timedelta(minutes=1)
+    assert cp.revision == 1
     xml = core_xml(path)
     assert "run_id" not in xml and "python-docx" not in xml and "PipelinePilot" not in xml
+    assert "2013-12-23" not in xml
 
 
 def test_render_changes_only_editable_text(tmp_path):
@@ -124,14 +136,16 @@ def test_fit_summary_and_interview_guide_carry_owner(tmp_path):
         assert_clean(gen(result, "Acme", "Director", tmp_path, author="Pat Example"), "Pat Example")
 
 
-def test_owner_comes_from_last_modified_by_then_author(tmp_path):
-    master = owned_master(tmp_path / "m.docx")
-    assert fae.document_author(str(master)) == "Pat Example"
-    doc = Document(str(master))
-    doc.core_properties.last_modified_by = ""
-    doc.core_properties.author = "Pat Author"
-    doc.save(str(master))
-    assert fae.document_author(str(master)) == "Pat Author"
+@pytest.mark.parametrize("author, last_modified_by, owner", [
+    ("Pat Example", "Resume Coach", "Pat Example"),   # Author, set by the owner, wins
+    ("Un-named", "Pat Example", "Pat Example"),       # placeholder Author: Last Modified By
+    ("", "Pat Example", "Pat Example"),
+    ("Un-named", "", ""),                             # only a placeholder: blank, never "Un-named"
+    ("UNKNOWN", "user", ""),                          # placeholders in any case
+])
+def test_owner_is_author_then_last_modified_by_skipping_placeholders(tmp_path, author, last_modified_by, owner):
+    master = owned_master(tmp_path / "m.docx", author, last_modified_by)
+    assert fae.document_author(str(master)) == owner
 
 
 def test_python_docx_default_author_is_never_the_owner(tmp_path):
@@ -235,6 +249,24 @@ def test_rerun_replaces_both_files(setup):
     assert labels(folder) == ({RES, TR}, "new", "new")
 
 
+def test_first_run_resume_failure_says_no_resume_was_written(setup, monkeypatch):
+    master, folder = setup
+    r, t = stage(folder, master, "new")
+    monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(OSError("access denied")))
+    out = fae.publish_resume(folder, RES, TR, r, t)
+    assert out["outcome"] == "publication-failed" and "no resume written" in out["detail"]
+    assert "previous resume kept" not in out["detail"] and not any(folder.iterdir())
+
+
+def test_staging_file_that_cannot_be_removed_is_named(setup, monkeypatch):
+    master, folder = setup
+    r, t = stage(folder, master, "new")
+    monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(OSError("locked")))
+    monkeypatch.setattr(fae, "_unlink", lambda p: (_ for _ in ()).throw(OSError("in use")))
+    out = fae.publish_resume(folder, RES, TR, r, t)
+    assert f"staging file left: {RES}.new, {TR}.new" in out["detail"]
+
+
 def test_resume_replace_failure_changes_nothing_and_cleans_up(setup, monkeypatch):
     """The resume is open in Word: nothing is replaced and no .new file is left."""
     master, folder = setup
@@ -252,22 +284,53 @@ def test_resume_replace_failure_changes_nothing_and_cleans_up(setup, monkeypatch
     assert labels(folder) == ({RES, TR}, "old", "old")
 
 
-def test_trace_replace_failure_publishes_resume_and_says_so(setup, monkeypatch):
-    master, folder = setup
-    publish(folder, master, "old")
-    r, t = stage(folder, master, "new")
+def trace_fails(monkeypatch):
     real = fae._replace
 
-    def trace_fails(src, dst):
+    def replace(src, dst):
         if str(src).endswith(TR + ".new"):
             raise OSError("disk full")
         real(src, dst)
 
-    monkeypatch.setattr(fae, "_replace", trace_fails)
+    monkeypatch.setattr(fae, "_replace", replace)
+
+
+def test_trace_failure_removes_the_earlier_trace_and_says_so(setup, monkeypatch):
+    """An earlier run's trace never stays beside the new resume (review round 1, Gee F4/F5)."""
+    master, folder = setup
+    publish(folder, master, "old")
+    r, t = stage(folder, master, "new")
+    trace_fails(monkeypatch)
     out = fae.publish_resume(folder, RES, TR, r, t)
-    monkeypatch.undo()
     assert out["outcome"] == "published"
-    assert "trace not updated" in out["detail"] and "earlier run" in out["detail"]
+    assert "trace not written (disk full)" in out["detail"] and "earlier trace was removed" in out["detail"]
+    assert labels(folder) == ({RES}, "new", None)
+
+
+def test_first_run_trace_failure_does_not_claim_an_earlier_trace(setup, monkeypatch):
+    master, folder = setup
+    r, t = stage(folder, master, "new")
+    trace_fails(monkeypatch)
+    out = fae.publish_resume(folder, RES, TR, r, t)
+    assert out["detail"] == "trace not written (disk full); no trace for this run"
+    assert labels(folder) == ({RES}, "new", None)
+
+
+def test_earlier_trace_that_cannot_be_removed_is_reported(setup, monkeypatch):
+    master, folder = setup
+    publish(folder, master, "old")
+    r, t = stage(folder, master, "new")
+    trace_fails(monkeypatch)
+    real_unlink = fae._unlink
+
+    def unlink(p):
+        if Path(p) == folder / TR:
+            raise OSError("in use")
+        real_unlink(p)
+
+    monkeypatch.setattr(fae, "_unlink", unlink)
+    out = fae.publish_resume(folder, RES, TR, r, t)
+    assert "is from an earlier run and could not be removed" in out["detail"]
     assert labels(folder) == ({RES, TR}, "new", "old")
 
 
