@@ -389,3 +389,19 @@ def test_save_replacing_first_run_says_no_file_written(tmp_path, monkeypatch):
     monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(OSError("denied")))
     with pytest.raises(fae.OutputNotReplaced, match="no file written"):
         fae.save_replacing(Document(), tmp_path / "a.docx")
+
+
+def test_save_replacing_staging_write_failure_keeps_the_file_and_removes_the_partial(tmp_path, monkeypatch):
+    """Confirmation round (Gee): a failed .new write is handled like a failed replace."""
+    target = tmp_path / "a.docx"
+    target.write_bytes(b"previous")
+    doc = Document()
+
+    def partial_save(path):
+        Path(path).write_bytes(b"half a file")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(doc, "save", partial_save)
+    with pytest.raises(fae.OutputNotReplaced, match="previous file kept"):
+        fae.save_replacing(doc, target)
+    assert target.read_bytes() == b"previous" and not (tmp_path / "a.docx.new").exists()

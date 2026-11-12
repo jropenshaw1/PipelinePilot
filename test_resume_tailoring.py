@@ -203,6 +203,29 @@ def test_render_failure_publishes_master_copy(env, monkeypatch):
     assert out["outcome"] == "published"
 
 
+
+@pytest.mark.parametrize("first_run", [True, False])
+def test_both_preparation_attempts_failing_warns(env, monkeypatch, first_run):
+    """Confirmation round (Gee): tailoring and the master-copy fallback both fail to
+    prepare. The run must still warn, and say whether a previous resume exists."""
+    master, folder, pool, inv = env
+    if not first_run:
+        gen(env, Client(echo(inv)))
+    old = (folder / RES).read_bytes() if not first_run else None
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot write")
+
+    monkeypatch.setattr(fae, "render_tailored_resume", boom)
+    monkeypatch.setattr(fae, "master_copy_resume", boom)
+    out = gen(env, Client(echo(inv)))
+    assert out["outcome"] == "publication-failed" and out["warning"] is True
+    if first_run:
+        assert "no resume written" in out["message"] and not (folder / RES).exists()
+    else:
+        assert "previous resume kept" in out["message"] and (folder / RES).read_bytes() == old
+    assert not [p for p in folder.rglob("*.new")]
+
 def test_publication_failure_keeps_previous_pair(env, monkeypatch):
     master, folder, pool, inv = env
     gen(env, Client(echo(inv)))

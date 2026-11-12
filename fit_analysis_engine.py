@@ -441,8 +441,8 @@ def save_replacing(doc, out: Path) -> Path:
     step. A file open in Word cannot be replaced; the previous one is kept."""
     out = Path(out)
     new = out.with_name(out.name + ".new")
-    doc.save(str(new))
     try:
+        doc.save(str(new))       # a failed or partial staging write is removed below
         _replace(new, out)
     except OSError as e:
         _safe_unlink(new)
@@ -1971,9 +1971,12 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
         except Exception as e2:
             for p in (resume_new, trace_new):
                 _safe_unlink(p)
-            msg = f"master-copy; publication-failed, previous resume kept ({reason}; {e2})"
+            kept = ("previous resume kept" if (folder_path / resume_name).exists()
+                    else "no resume written")
+            msg = f"master-copy; publication-failed, {kept} ({reason}; {e2})"
             return {"resume": None, "trace": None, "state": state, "retuned": 0,
-                    "outcome": "publication-failed", "message": " | ".join(notes + [msg])}
+                    "outcome": "publication-failed", "warning": True,
+                    "message": " | ".join(notes + [msg])}
 
     pub = publish_resume(folder_path, resume_name, trace_name, resume_new, trace_new)
     if state == "master-copy":
