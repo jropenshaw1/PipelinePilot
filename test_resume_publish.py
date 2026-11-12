@@ -405,3 +405,13 @@ def test_save_replacing_staging_write_failure_keeps_the_file_and_removes_the_par
     with pytest.raises(fae.OutputNotReplaced, match="previous file kept"):
         fae.save_replacing(doc, target)
     assert target.read_bytes() == b"previous" and not (tmp_path / "a.docx.new").exists()
+
+
+def test_save_replacing_names_a_staging_file_it_cannot_remove(tmp_path, monkeypatch):
+    """Confirmation nit (Gee): cleanup is best effort, so a leftover .new is reported."""
+    target = tmp_path / "a.docx"
+    target.write_bytes(b"previous")
+    monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    monkeypatch.setattr(fae, "_unlink", lambda p: (_ for _ in ()).throw(OSError("in use")))
+    with pytest.raises(fae.OutputNotReplaced, match="staging file left: a.docx.new"):
+        fae.save_replacing(Document(), target)

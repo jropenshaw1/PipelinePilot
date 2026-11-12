@@ -445,10 +445,10 @@ def save_replacing(doc, out: Path) -> Path:
         doc.save(str(new))       # a failed or partial staging write is removed below
         _replace(new, out)
     except OSError as e:
-        _safe_unlink(new)
+        left = "" if _safe_unlink(new) else f"; staging file left: {new.name}"
         kept = ("previous file kept (is it open in Word?)" if out.exists()
                 else "no file written")
-        raise OutputNotReplaced(f"{out.name} not replaced ({e}); {kept}") from e
+        raise OutputNotReplaced(f"{out.name} not replaced ({e}); {kept}{left}") from e
     return out
 
 
@@ -1969,11 +1969,12 @@ def generate_tailored_resume(result: dict, company: str, role: str, folder_path:
             write_resume_trace(trace_new, run_id=run_id, state=state, company=company, role=role,
                                model=model, inventory=None, pool=None, res=None, reason=reason)
         except Exception as e2:
-            for p in (resume_new, trace_new):
-                _safe_unlink(p)
+            left = [p.name for p in (resume_new, trace_new) if not _safe_unlink(p)]
             kept = ("previous resume kept" if (folder_path / resume_name).exists()
                     else "no resume written")
             msg = f"master-copy; publication-failed, {kept} ({reason}; {e2})"
+            if left:
+                msg += f"; staging file left: {', '.join(left)}"
             return {"resume": None, "trace": None, "state": state, "retuned": 0,
                     "outcome": "publication-failed", "warning": True,
                     "message": " | ".join(notes + [msg])}
