@@ -1,5 +1,6 @@
 """ADR-015 §9 and §10: input caps, sentence splitting, voice ban #6 removal."""
 import pytest
+from pathlib import Path
 import yaml
 
 import fit_analysis_engine as fae
@@ -193,36 +194,73 @@ def test_run_passes_file_owner_to_cover_letter_and_resume(tmp_path, monkeypatch)
     assert seen == {"cover_letter": "openshaw", "resume": "openshaw"}
 
 
-@pytest.mark.parametrize("warning", [True, False])
-def test_resume_warning_reaches_the_finish_dialog(tmp_path, monkeypatch, warning):
-    """ADR-015 Amendment 6 review round 1 (Gee F1): a resume or trace problem is passed
-    to on_success as result["resume_warning"], so the dialog is not shown all green."""
+def _run_with_stubs(tmp_path, monkeypatch, tailored, stub_generators=True):
     pytest.importorskip("anthropic")
     folder = tmp_path / "Acme_Director"
-    folder.mkdir()
+    folder.mkdir(exist_ok=True)
     (folder / "JD_Acme_Director.txt").write_text("We want platforms. " * 20, encoding="utf-8")
     resume = tmp_path / "resume.md"
     resume.write_text("r" * 300, encoding="utf-8")
-    msg = "tailored: 0 retuned items need review; publication-failed (locked; previous resume kept)"
-
-    def tailored(*a, **k):
-        return {"resume": None, "trace": None, "state": "tailored", "retuned": 0,
-                "outcome": "publication-failed" if warning else "published",
-                "warning": warning, "message": msg}
-
     monkeypatch.setattr(fae.vault, "get_secret", lambda *a, **k: "key")
     monkeypatch.setattr(fae.database, "get_opportunity",
                         lambda db, name: {"company_name": "Acme", "role_title": "Director",
                                           "job_url": None, "status": "New"})
     monkeypatch.setattr(fae.database, "update_opportunity", lambda *a, **k: None)
-    monkeypatch.setattr(fae, "_call_api", lambda *a, **k: _result("Led the datacenter exit across many teams."))
+    full = {**_result("Led the datacenter exit across many teams."),
+            "cover_letter": "Dear team,\nBody.\nSincerely,", "interview_guide": []}
+    monkeypatch.setattr(fae, "_call_api", lambda *a, **k: full)
     monkeypatch.setattr(fae, "generate_tailored_resume", tailored)
-    for name in ("generate_fit_summary", "generate_cover_letter", "generate_interview_guide"):
-        monkeypatch.setattr(fae, name, lambda *a, **k: None)
+    if stub_generators:
+        for name in ("generate_fit_summary", "generate_cover_letter", "generate_interview_guide"):
+            monkeypatch.setattr(fae, name, lambda *a, **k: None)
     errors, results = [], []
     t = fae.run_fit_analysis(tmp_path / "x.db", str(tmp_path), "Acme_Director", str(resume), 0.65,
-                             on_success=lambda r, f: results.append(r), on_error=errors.append,
-                             model="claude-test-1")
+                             on_success=lambda r, f: results.append((r, f)), on_error=errors.append,
+                             model="claude-test-1", file_owner="pat")
     t.join(10)
+    return folder, errors, results
+
+
+def _tailored(warning, msg="tailored: 0 retuned items need review; published"):
+    def tailored(*a, **k):
+        return {"resume": None, "trace": None, "state": "tailored", "retuned": 0,
+                "outcome": "publication-failed" if warning else "published",
+                "warning": warning, "message": msg}
+    return tailored
+
+
+@pytest.mark.parametrize("warning", [True, False])
+def test_resume_warning_reaches_the_finish_dialog(tmp_path, monkeypatch, warning):
+    """ADR-015 Amendment 6 review round 1 (Gee F1): a resume or trace problem is passed
+    to on_success in result["warnings"], so the dialog is not shown all green."""
+    msg = "tailored: 0 retuned items need review; publication-failed (locked; previous resume kept)"
+    _, errors, results = _run_with_stubs(tmp_path, monkeypatch, _tailored(warning, msg))
     assert errors == [] and len(results) == 1
-    assert results[0].get("resume_warning") == (msg if warning else None)
+    assert results[0][0]["warnings"] == ([f"Resume: {msg}"] if warning else [])
+
+
+def test_cover_letter_open_in_word_is_kept_and_the_run_finishes(tmp_path, monkeypatch):
+    """Owner's manual test, November 11, 2026: a cover letter open in Word stopped the
+    whole run with "Unexpected error". It now keeps the previous file and warns (E2b)."""
+    folder = tmp_path / "Acme_Director"
+    folder.mkdir()
+    old = folder / "pat_coverletter_Acme.docx"
+    old.write_bytes(b"previous cover letter")
+    real = fae._replace
+
+    def locked(src, dst):
+        if Path(dst) == old:
+            raise PermissionError(13, "Permission denied")
+        real(src, dst)
+
+    monkeypatch.setattr(fae, "_replace", locked)
+    _, errors, results = _run_with_stubs(tmp_path, monkeypatch, _tailored(False), stub_generators=False)
+    assert errors == [] and len(results) == 1
+    result, files = results[0]
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0].startswith("Cover letter: pat_coverletter_Acme.docx not replaced")
+    assert "previous file kept (is it open in Word?)" in result["warnings"][0]
+    assert old.read_bytes() == b"previous cover letter"
+    assert old not in files                                          # not listed as written
+    assert (folder / "FitAnalysis_Acme.docx").exists() and (folder / "InterviewGuide_Acme_Director.docx").exists()
+    assert not list(folder.glob("*.new"))

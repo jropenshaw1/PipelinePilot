@@ -367,3 +367,25 @@ def test_old_publication_journal_is_ignored(setup):
     master, folder = setup
     (folder / ".resume_publish.json").write_text("{}", encoding="utf-8")
     assert fae.folder_resume_problems(folder) == []
+
+
+# ── Amendment 6 E2b: other generated files are replaced in one step ──
+
+def test_save_replacing_writes_and_leaves_no_staging_file(tmp_path):
+    out = fae.save_replacing(Document(), tmp_path / "a.docx")
+    assert out.exists() and not (tmp_path / "a.docx.new").exists()
+
+
+def test_save_replacing_keeps_a_locked_file(tmp_path, monkeypatch):
+    target = tmp_path / "a.docx"
+    target.write_bytes(b"previous")
+    monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(fae.OutputNotReplaced, match="previous file kept"):
+        fae.save_replacing(Document(), target)
+    assert target.read_bytes() == b"previous" and not (tmp_path / "a.docx.new").exists()
+
+
+def test_save_replacing_first_run_says_no_file_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(fae, "_replace", lambda src, dst: (_ for _ in ()).throw(OSError("denied")))
+    with pytest.raises(fae.OutputNotReplaced, match="no file written"):
+        fae.save_replacing(Document(), tmp_path / "a.docx")

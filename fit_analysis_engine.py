@@ -432,6 +432,26 @@ def document_author(resume_path: str) -> str:
         return ""
 
 
+class OutputNotReplaced(Exception):
+    """A generated file could not be put in place; the run goes on and warns."""
+
+
+def save_replacing(doc, out: Path) -> Path:
+    """ADR-015 Amendment 6 E2b: save to {name}.new, then replace the file in one
+    step. A file open in Word cannot be replaced; the previous one is kept."""
+    out = Path(out)
+    new = out.with_name(out.name + ".new")
+    doc.save(str(new))
+    try:
+        _replace(new, out)
+    except OSError as e:
+        _safe_unlink(new)
+        kept = ("previous file kept (is it open in Word?)" if out.exists()
+                else "no file written")
+        raise OutputNotReplaced(f"{out.name} not replaced ({e}); {kept}") from e
+    return out
+
+
 # ─────────────────────────────────────────────
 # Document generators
 # ─────────────────────────────────────────────
@@ -500,8 +520,7 @@ def generate_fit_summary(result: dict, company: str, role: str, folder_path: Pat
     _bullet(doc, "If you update your resume based on any gap items above, rerun this analysis before applying.")
 
     out = folder_path / f"FitAnalysis_{_sanitize(company)}.docx"
-    doc.save(str(out))
-    return out
+    return save_replacing(doc, out)
 
 
 def generate_cover_letter(result: dict, company: str, role: str, folder_path: Path,
@@ -579,8 +598,7 @@ def generate_cover_letter(result: dict, company: str, role: str, folder_path: Pa
     sig_p.paragraph_format.space_after = Pt(0)
 
     out = folder_path / upload_file_name("coverletter", company, file_owner)
-    doc.save(str(out))
-    return out
+    return save_replacing(doc, out)
 
 
 # ─────────────────────────────────────────────
@@ -2016,8 +2034,7 @@ def generate_interview_guide(result: dict, company: str, role: str, folder_path:
         doc.add_paragraph()
 
     out = folder_path / f"InterviewGuide_{_sanitize(company)}_{_sanitize(role)}.docx"
-    doc.save(str(out))
-    return out
+    return save_replacing(doc, out)
 
 
 # ─────────────────────────────────────────────
@@ -2297,12 +2314,23 @@ def run_fit_analysis(
                 model=model,
             )
 
+            warnings = []   # ADR-015 Amendment 6 E2a: shown in the finish dialog
+
+            def kept_if_locked(label, generate, *args):
+                try:
+                    return generate(*args)
+                except OutputNotReplaced as e:
+                    warnings.append(f"{label}: {e}")
+                    return None
+
             _p("Generating fit summary...", stage="fit_summary")
             author = document_author(resume_path)
-            fa_path = generate_fit_summary(result, company, role, folder_path, author)
+            fa_path = kept_if_locked("Fit summary", generate_fit_summary,
+                                     result, company, role, folder_path, author)
 
             _p("Generating cover letter...", stage="cover_letter")
-            cl_path = generate_cover_letter(result, company, role, folder_path, file_owner, author)
+            cl_path = kept_if_locked("Cover letter", generate_cover_letter,
+                                     result, company, role, folder_path, file_owner, author)
 
             _p("Tailoring resume...", "Second call: select, check and publish", stage="resume")
             tailoring = generate_tailored_resume(
@@ -2314,7 +2342,8 @@ def run_fit_analysis(
             _p("Tailored resume", tailoring["message"], stage="resume")
 
             _p("Generating interview prep guide...", stage="interview_guide")
-            ip_path = generate_interview_guide(result, company, role, folder_path, author)
+            ip_path = kept_if_locked("Interview guide", generate_interview_guide,
+                                     result, company, role, folder_path, author)
 
             # Update SQLite. Status moves to Analyzing only from a pre-analysis
             # status; a JFA re-run never moves Applied/Pursuing/etc. backward.
@@ -2334,7 +2363,8 @@ def run_fit_analysis(
                                         tailoring["trace"], ip_path) if p]
             result["resume_tailoring"] = tailoring["message"]
             if tailoring.get("warning"):
-                result["resume_warning"] = tailoring["message"]
+                warnings.insert(0, f"Resume: {tailoring['message']}")
+            result["warnings"] = warnings
             done = f"{result['fit_score']:.0%} — {recommendation} | Resume: {tailoring['message']}"
             _p("Complete.", done, stage="complete")
             on_success(result, output_files)

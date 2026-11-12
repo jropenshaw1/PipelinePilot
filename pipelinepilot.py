@@ -2767,10 +2767,10 @@ class AnalysisProgressDialog(ctk.CTkToplevel):
                 self._set_card_state(stage_id, "complete")
             self._step_var.set("Analysis complete.")
             self._detail_var.set("")
-            warning = result.get("resume_warning")
-            if warning:  # ADR-015 Amendment 6: a resume or trace problem is never shown as all green
-                self._step_var.set("Analysis complete, with a resume warning.")
-                self._error_var.set(f"Resume: {warning}")
+            warnings = result.get("warnings") or []
+            if warnings:  # ADR-015 Amendment 6: a file left in place is never shown as all green
+                self._step_var.set("Analysis complete, with warnings.")
+                self._error_var.set("\n".join(warnings))
                 self._error_lbl.pack(anchor="w", pady=(14, 8))
             rec = ("APPLY" if result["fit_score"] >= 0.75 else
                    "HOLD" if result["fit_score"] >= 0.60 else "PASS")
