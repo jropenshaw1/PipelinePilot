@@ -48,3 +48,8 @@
 - For UI/workflow changes, manually launch `python pipelinepilot.py` when safe and report what was exercised.
 - For schema/migration changes, verify idempotency against existing DB shape or explain why this was not run.
 - Report commands run, checks performed, unavailable checks, and remaining approval/review gates.
+
+## Test temp output
+- All pytest temp and cache output stays inside the repo: temp under `.pytest_tmp/` (set in `pytest.ini`), cache under `.pytest_cache/`; both gitignored.
+- Never pass `--basetemp` or `-o cache_dir` pointing outside the repo or worktree root.
+- Before handing work back, delete any temp files or folders the run created outside `.pytest_tmp/`.
