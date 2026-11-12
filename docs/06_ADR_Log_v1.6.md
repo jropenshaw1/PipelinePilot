@@ -16,7 +16,7 @@
 - **v1.6** (October 30, 2026) — ADR-016 (JFA Model as a Setting)
 - **v1.6, amended** (October 31, 2026) — ADR-015 Amendment 2 (Per-Paragraph Length Capacity) and Amendment 3 (The Job Description Is Never Truncated)
 - **v1.6, amended** (November 1, 2026) — ADR-015 Amendment 4 D1 (Competency Terms Are Whole Master Phrases); Amendment 2 implementation-review fixes recorded in the ADR-015 Implementation Notes
-- **v1.6, amended** (November 11, 2026) — ADR-015 Amendment 6 (Clean Upload Files and Simple Publication), proposed
+- **v1.6, amended** (November 11, 2026) — ADR-015 Amendment 6 (Clean Upload Files and Simple Publication), accepted and implemented
 
 ---
 
@@ -735,7 +735,7 @@ Implemented in five commits on October 28, 2026: `f14abd7` (status model v2), `5
 ## ADR-015: Traceable Resume Tailoring
 
 **Date:** October 30, 2026
-**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1), October 31, 2026 (Amendments 2 and 3), November 1, 2026 (Amendment 4, D1), November 4, 2026 (Amendment 5, proposed) and November 11, 2026 (Amendment 6, proposed). Implemented October 30–31, 2026; see Implementation Notes.
+**Status:** Accepted (Jonathan Openshaw, October 30, 2026). Review gate: round 1, Gee and Mini APPROVE_WITH_CHANGES; confirmation, Mini CONFIRM (revision 2) and Gee CONFIRM (revision 3, publication contract). Amended October 30, 2026 (Amendment 1), October 31, 2026 (Amendments 2 and 3), November 1, 2026 (Amendment 4, D1), November 4, 2026 (Amendment 5, proposed) and November 11, 2026 (Amendment 6). Implemented October 30–31, 2026; see Implementation Notes.
 **Amends:** none. Supersedes the March 14, 2026 decision (commit `fix: remove Key Qualifications prepend`) that the tailored resume is a copy of the master.
 
 ### Context
@@ -1020,7 +1020,7 @@ Length alone never removes a bullet, drops a proof point or produces `master-cop
 
 ### Amendment 6: Clean Upload Files and Simple Publication
 
-**Status:** Proposed (Jonathan Openshaw, November 11, 2026). Code review round 1 through OpenBrain (packet b5cd4a28, code `d1e4c4c`): Gee REQUEST_CHANGES, Grok APPROVE_WITH_CHANGES. A Lexi review run on Claude Opus 5.5 is not counted (same model family as the author). Fix round below; confirmation review and Jonathan's final call at the merge gate pending.
+**Status:** Accepted (Jonathan Openshaw, November 11, 2026). Code review round 1 through OpenBrain (packet b5cd4a28, code `d1e4c4c`): Gee REQUEST_CHANGES, Grok APPROVE_WITH_CHANGES. A Lexi review run on Claude Opus 5.5 is not counted (same model family as the author). Confirmation: Grok CONFIRM (`c743f68`), Gee CONFIRM_WITH_NITS (`ac982fb`). Merged to main November 11, 2026; see Implementation Notes.
 **Changes:** §5.1 (publication, pair binding, recovery, startup check), replaced by the rules below. The document properties of every generated `.docx`. The finish dialog of a JFA run. Amendment 5's names and prefix pairing are unchanged. §5 run states and the trace content are unchanged.
 
 **Context.**
@@ -1067,6 +1067,7 @@ Implemented October 30–31, 2026: `5ceb44d` (master parser and pool loader), `0
 - **Documentation:** Data Dictionary v1.3 (§3 trace artifact, §7 `resume_pool_path`), README and CHANGELOG describe the implemented behavior.
 - **Amendment 2 code review (November 1, 2026).** Fixes F1 to F10 from the round-2 review: `2d75585` (exact source text, combined length step, final invariants, structure guards), `6b45c7e` (summary duplicates), `2c14b43` (tests), `d26fcf0` (trace growth, master length in the prompt), `5e02009` (README assurance statement and known limits). Capacity and the A3 ceiling run in one loop per role, `_reduce_role()`, called from `apply_capacity()`; an A3 step restores the replaced bullet's own cited master first, as the capacity fallback does.
 - **Amendment 4 D1** in `f02a746`; implementation-review fixes in `bf202de` (a line equal to an own-group master apart from case and spacing is that master, so a capacity restore cannot publish it twice; `|` in a competency term; cleaned terms; role order checked before the count cap; `excluded_roles` required; verified competency lines checked) and in this documentation change.
+- **Amendment 6** in `324f34e` to `8dbc371` on `fix/clean-metadata-simple-publish`, fast-forwarded to main: `49f54e6` (clean core properties, resume-first publication, name-only startup check), `cddb691` (review round 1: finish-dialog warnings, run-time dates, Author before Last Modified By, trace failure removes the earlier trace), `32e0ce8` (E2b, from the owner's manual test), `4e7d3ba` and `82bff58` (confirmation round). Built as decided. The owner's manual test on Windows with Word AutoSave on in a OneDrive folder confirmed that a resume open in Word is kept and reported. 412 tests pass.
 
 ---
 
