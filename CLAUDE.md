@@ -78,3 +78,8 @@ These govern how you interact, not just what you build.
 - `queries/quick_fit_queries.sql` — 14 pre-built analytical queries for quick-fit data
 - `docs/` — ADRs and design decisions; read relevant ADRs before proposing structural changes
 - `extensions/job-hunt/schema.sql` in the private ob1-extensions repo — reference schema for interviews table (Nate B. Jones OB1)
+
+## Test temp output
+- All pytest temp and cache output stays inside the repo: temp under `.pytest_tmp/` (set in `pytest.ini`), cache under `.pytest_cache/`; both gitignored.
+- Never pass `--basetemp` or `-o cache_dir` pointing outside the repo or worktree root.
+- Before handing work back, delete any temp files or folders the run created outside `.pytest_tmp/`.
