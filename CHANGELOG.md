@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 ## [Unreleased]
+- **Clean upload files and simple resume publication** (ADR-015 Amendment 6) -- generated `.docx` files no longer carry the PipelinePilot run comment, python-docx's default comment or the master's placeholder Author; Author and Last Modified By are the owner's name from the master resume. The resume is published first, then the trace, with no journal, `.prev` files or rollback. The startup check reports only a trace whose resume is missing: a resume or cover letter edited in Word is never reported, and "resume and trace from different runs" and "interrupted resume publication" are gone.
 - **Short upload file names** (ADR-015 Amendment 5) -- the resume and cover letter are saved as \owner_resume_Company.docx` and `owner_coverletter_Company.docx` (owner from Settings → File Name Owner, up to 12 characters; Company up to 20; 50 characters at most). Review traces are now `_review/TRACE_DO-NOT-UPLOAD-owner_resume_Company.md`; folders analyzed earlier keep their names and still pair at startup.`
 
 ### Added

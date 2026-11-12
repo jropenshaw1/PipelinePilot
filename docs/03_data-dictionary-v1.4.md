@@ -1,6 +1,7 @@
 # PipelinePilot — Data Dictionary
 
 - **v1.4** (November 4, 2026) — Short upload file names (ADR-015 Amendment 5): \file_owner` config key; `owner_resume_Company.docx` / `owner_coverletter_Company.docx`; trace prefix `TRACE_DO-NOT-UPLOAD-` (hyphen); earlier folders keep the underscore form. No database or schema change.`
+- **v1.4, amended** (November 11, 2026) — ADR-015 Amendment 6: upload files carry the owner's name and no tool metadata; the `run_id` lives in the trace only.
 
 **Version:** 1.4  
 **Date:** October 31, 2026  
@@ -64,9 +65,9 @@ Each `Company_Role` folder is expected to contain the following files:
 | `JD_Company_Role.docx` | Word document | PipelinePilot (blank) + User (content) | Yes | Job description, URL, contact details. Filename = `JD_` + `folder_name` + `.docx`. No separate sanitization — folder_name is already clean. |
 | `fit_analysis.md` | Markdown + YAML | Job Fit Analyst skill | No (required for fit indexing) | YAML front-matter metadata + narrative analysis |
 | `fit_analysis.docx` | Word document | Job Fit Analyst skill | No | Human-readable fit analysis for review and demos |
-| `owner_resume_Company.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role (ADR-015 Amendment 5: `owner` is the `file_owner` setting, up to 12 characters, omitted when blank; `Company` is cut to 20 characters; folders analyzed earlier keep `Resume_CompanyName_RoleTitle.docx`), edited from a copy of the master `.docx` (ADR-015). Its comments field carries the run's `run_id` and state (`tailored`, `partial` or `master-copy`). Published as a pair with the review trace. |
-| `_review/TRACE_DO-NOT-UPLOAD-owner_resume_Company.md` | Markdown | Job Fit Analyst run | No | Review trace for the tailored resume, named for the resume it traces (ADR-015; earlier folders: `TRACE_DO-NOT-UPLOAD_CompanyName_RoleTitle.md`, underscore after UPLOAD, paired with `Resume_CompanyName_RoleTitle.docx`): run state, model, master hash, length capacity results, every retuned item beside its source, and every change the checks made. Carries the same `run_id` as the resume. For review only; never uploaded. |
-| `owner_coverletter_Company.docx` | Word document | Job Fit Analyst skill | No | Tailored cover letter for this role (named as the resume is; folders analyzed earlier keep `CoverLetter_CompanyName_RoleTitle.docx`) |
+| `owner_resume_Company.docx` | Word document | Job Fit Analyst skill | No | Tailored resume for this role (ADR-015 Amendment 5: `owner` is the `file_owner` setting, up to 12 characters, omitted when blank; `Company` is cut to 20 characters; folders analyzed earlier keep `Resume_CompanyName_RoleTitle.docx`), edited from a copy of the master `.docx` (ADR-015). Author and Last Modified By are the owner's name from the master; comments, title, subject, keywords and category are empty (ADR-015 Amendment 6). Published before its review trace. |
+| `_review/TRACE_DO-NOT-UPLOAD-owner_resume_Company.md` | Markdown | Job Fit Analyst run | No | Review trace for the tailored resume, named for the resume it traces (ADR-015; earlier folders: `TRACE_DO-NOT-UPLOAD_CompanyName_RoleTitle.md`, underscore after UPLOAD, paired with `Resume_CompanyName_RoleTitle.docx`): run state, model, master hash, length capacity results, every retuned item beside its source, and every change the checks made. Carries the run's `run_id`, which appears nowhere else (ADR-015 Amendment 6). For review only; never uploaded. |
+| `owner_coverletter_Company.docx` | Word document | Job Fit Analyst skill | No | Tailored cover letter for this role (named as the resume is; folders analyzed earlier keep `CoverLetter_CompanyName_RoleTitle.docx`). Document properties as for the resume (ADR-015 Amendment 6). |
 
 ---
 
